@@ -6,6 +6,8 @@ const fixture = (name: string) =>
   readFileSync(new URL(`../../tests/fixtures/${name}`, import.meta.url), "utf8");
 
 const numbered = fixture("synthetic-numbered.txt");
+const capsHeaders = fixture("synthetic-caps-headers.txt");
+const unstructured = fixture("synthetic-unstructured.txt");
 
 describe("segmentClauses", () => {
   it("splits a numbered lease into one clause per numbered section, in order", () => {
@@ -31,6 +33,28 @@ describe("segmentClauses", () => {
     expect(clauses.map((clause) => clause.order)).toEqual(
       clauses.map((_, index) => index),
     );
+  });
+
+  it("groups each ALL-CAPS heading with the body that follows it", () => {
+    const clauses = segmentClauses(capsHeaders, "doc-4");
+    // title + preamble, then 8 headed sections
+    expect(clauses).toHaveLength(9);
+    expect(clauses[1]?.text).toMatch(/^RENT\b/);
+    expect(clauses[1]?.text).toContain("Rs. 22,000");
+    expect(clauses[8]?.text).toMatch(/^SUBLETTING/);
+    expect(clauses[8]?.text).toContain("prior written consent");
+  });
+
+  it("keeps the document title with the opening preamble clause", () => {
+    const clauses = segmentClauses(capsHeaders, "doc-5");
+    expect(clauses[0]?.text).toContain("RENTAL AGREEMENT");
+    expect(clauses[0]?.text).toContain("made at Bengaluru");
+  });
+
+  it("merges an ALL-CAPS title into the opening clause of an unstructured lease", () => {
+    const clauses = segmentClauses(unstructured, "doc-6");
+    expect(clauses[0]?.text).toContain("MEMORANDUM OF TENANCY");
+    expect(clauses[0]?.text).toContain("Sunita Deshmukh");
   });
 
   it("never returns an empty clause", () => {

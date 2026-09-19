@@ -29,3 +29,9 @@ export function getClauses(docId: string): Clause[] | undefined {
 export function clearDocuments(): void {
   documents.clear();
 }
+
+/** Replaces the stored clause list for a document (e.g. classification results). */
+export function updateClauses(docId: string, clauses: Clause[]): void {
+  const stored = documents.get(docId);
+  if (stored) stored.clauses = clauses;
+}
