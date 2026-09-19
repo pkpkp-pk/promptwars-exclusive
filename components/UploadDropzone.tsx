@@ -19,6 +19,20 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const GENERIC_UPLOAD_ERROR =
+  "We couldn’t read that file. Make sure it’s a PDF or DOCX under 10 MB, then try again.";
+
+/** Prefer the route's own error message; fall back to the generic one. */
+async function serverErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: string };
+    if (body.error) return body.error;
+  } catch {
+    // Not a JSON error body (e.g. an HTML error page) — use the generic message.
+  }
+  return GENERIC_UPLOAD_ERROR;
+}
+
 export default function UploadDropzone() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -59,14 +73,16 @@ export default function UploadDropzone() {
       body.set("file", file);
       const response = await fetch("/api/upload", { method: "POST", body });
       if (!response.ok) {
-        throw new Error(`Upload failed with status ${response.status}`);
+        throw new Error(await serverErrorMessage(response));
       }
       const data = (await response.json()) as UploadResponse;
       router.push(`/review/${data.docId}`);
-    } catch {
+    } catch (error) {
       setUploading(false);
       setError(
-        "We couldn’t read that file. Make sure it’s a PDF or DOCX under 10 MB, then try again.",
+        error instanceof Error && error.message
+          ? error.message
+          : GENERIC_UPLOAD_ERROR,
       );
     }
   };
