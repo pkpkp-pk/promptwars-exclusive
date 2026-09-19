@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --paper: #f7f7f3;
+  --card: #ffffff;
+  --ink: #1f2532;
+  --ink-muted: #5a6270;
+  --rule: #e4e2d9;
+  --standard: #23704a;
+  --unusual: #9a6700;
+  --risky: #c0331d;
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-rule: var(--rule);
+  --color-standard: var(--standard);
+  --color-unusual: var(--unusual);
+  --color-risky: var(--risky);
+  --font-sans: var(--font-public-sans), system-ui, sans-serif;
+  --font-serif: var(--font-spectral), Georgia, serif;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-public-sans), system-ui, sans-serif;
+}
+
+/*
+ * The one orchestrated moment on the landing page: the sample clause gets
+ * annotated — an amber highlight sweeps the flagged phrase, then the
+ * plain-language margin note settles in. Fully static under reduced motion.
+ */
+@keyframes annotate-sweep {
+  from {
+    background-size: 0% 0.8em;
+  }
+  to {
+    background-size: 100% 0.8em;
+  }
+}
+
+@keyframes annotate-note {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.annotate-mark {
+  color: inherit;
+  background-color: transparent;
+  background-image: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--unusual) 24%, transparent),
+    color-mix(in srgb, var(--unusual) 24%, transparent)
+  );
+  background-repeat: no-repeat;
+  background-size: 100% 0.8em;
+  background-position: 0 78%;
+  padding: 0 0.08em;
+  border-bottom: 2px solid color-mix(in srgb, var(--unusual) 55%, transparent);
+  animation: annotate-sweep 800ms ease-out 350ms both;
+}
+
+.annotate-note {
+  animation: annotate-note 500ms ease-out 1200ms both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .annotate-mark,
+  .annotate-note {
+    animation: none;
+  }
+}
