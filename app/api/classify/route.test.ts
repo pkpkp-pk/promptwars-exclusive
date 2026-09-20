@@ -107,9 +107,9 @@ it("classifies a stored document and persists the results", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
-it("returns 502 when the Gemini call fails", async () => {
+it("returns 502 when the Gemini call fails on every model", async () => {
   storedDoc("d1", ["1. Rent clause."]);
-  fetchMock.mockResolvedValueOnce(new Response("{}", { status: 500 }));
+  fetchMock.mockImplementation(async () => new Response("{}", { status: 500 }));
 
   const response = await classify({ docId: "d1" });
   expect(response.status).toBe(502);

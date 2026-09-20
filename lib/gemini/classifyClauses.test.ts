@@ -128,10 +128,78 @@ describe("classifyClauses", () => {
     expect(classified[2]?.riskLevel).toBeUndefined();
   });
 
-  it("throws a clear error when the Gemini API responds with an error status", async () => {
-    fetchMock.mockResolvedValueOnce(new Response("{}", { status: 429 }));
+  it("throws the last error when every model in the chain is rate-limited", async () => {
+    fetchMock.mockImplementation(async () => new Response("{}", { status: 429 }));
 
     await expect(classifyClauses(threeClauses())).rejects.toThrow(/status 429/);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses gemini-3.8-flash as the primary model", async () => {
+    fetchMock.mockResolvedValueOnce(geminiResponse([]));
+
+    await classifyClauses(threeClauses());
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("models/gemini-3.8-flash:generateContent");
+  });
+
+  it("falls back to gemini-3.7-flash when the primary model is unavailable", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("{}", { status: 404 }))
+      .mockResolvedValueOnce(
+        geminiResponse([
+          { id: "d1-c0", category: "rent", riskLevel: "standard", explanation: "Sets the rent." },
+        ]),
+      );
+
+    const classified = await classifyClauses(threeClauses());
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url1] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const [url2] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(url1).toContain("gemini-3.8-flash");
+    expect(url2).toContain("gemini-3.7-flash");
+    expect(classified[0]?.category).toBe("rent");
+  });
+
+  it("falls back to gemini-3.6-flash when both newer models fail", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("{}", { status: 404 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 429 }))
+      .mockResolvedValueOnce(
+        geminiResponse([
+          { id: "d1-c0", category: "rent", riskLevel: "standard", explanation: "Sets the rent." },
+        ]),
+      );
+
+    const classified = await classifyClauses(threeClauses());
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [url3] = fetchMock.mock.calls[2] as unknown as [string, RequestInit];
+    expect(url3).toContain("gemini-3.6-flash");
+    expect(classified[0]?.category).toBe("rent");
+  });
+
+  it("does not fall back when the API key itself is rejected", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: "API key not valid." } }), {
+        status: 400,
+      }),
+    );
+
+    await expect(classifyClauses(threeClauses())).rejects.toThrow(/status 400/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a pinned GEMINI_MODEL without a fallback chain", async () => {
+    vi.stubEnv("GEMINI_MODEL", "gemini-2.5-flash");
+    fetchMock.mockResolvedValueOnce(new Response("{}", { status: 404 }));
+
+    await expect(classifyClauses(threeClauses())).rejects.toThrow(/status 404/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("gemini-2.5-flash");
   });
 
   it("includes the API's own error detail when Gemini rejects the request", async () => {

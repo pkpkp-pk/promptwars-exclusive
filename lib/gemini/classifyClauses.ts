@@ -9,12 +9,29 @@ import type { Clause, ClauseCategory, RiskLevel } from "@/lib/types";
  * anything the clause's own words do not say (constraints 1 and 5).
  *
  * Calls are batched (default 25 clauses per request, sequential) to keep them
- * cheap and fast per AGENTS.md §7.
+ * cheap and fast per AGENTS.md §7. Models: gemini-3.8-flash first, falling
+ * back to gemini-3.7-flash then gemini-3.6-flash on model-level failures
+ * (unavailable, rate-limited, server errors). Key- and request-level
+ * failures (400/401/403) fail identically on every model, so they fail fast
+ * with the full diagnostic instead of burning the chain. Setting GEMINI_MODEL
+ * pins a single model and disables the chain.
  */
 
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const MODEL_CHAIN = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"];
 export const DEFAULT_BATCH_SIZE = 25;
+
+const FATAL_STATUSES = new Set([400, 401, 403]);
+
+class GeminiHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GeminiHttpError";
+  }
+}
 
 const CATEGORIES: readonly ClauseCategory[] = [
   "rent",
@@ -71,11 +88,11 @@ function isRiskLevel(value: unknown): value is RiskLevel {
   return RISK_LEVELS.includes(value as RiskLevel);
 }
 
-async function classifyBatch(batch: Clause[]): Promise<Map<string, GeminiClassification>> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
-
-  const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+async function classifyBatch(
+  batch: Clause[],
+  model: string,
+  apiKey: string,
+): Promise<Map<string, GeminiClassification>> {
   const prompt =
     "Classify the following lease clauses. Use the exact id given for each.\n\n" +
     batch.map((clause) => `id: ${clause.id}\n${clause.text}`).join("\n\n");
@@ -108,7 +125,10 @@ async function classifyBatch(batch: Clause[]): Promise<Map<string, GeminiClassif
     } catch {
       // Non-JSON error body — the status alone is still thrown.
     }
-    throw new Error(`Gemini API request failed with status ${response.status}${detail}`);
+    throw new GeminiHttpError(
+      response.status,
+      `Gemini API request failed with status ${response.status}${detail}`,
+    );
   }
 
   const data = (await response.json()) as {
@@ -142,12 +162,42 @@ export async function classifyClauses(
   clauses: Clause[],
   options: ClassifyOptions = {},
 ): Promise<Clause[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
+
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  // An explicitly pinned model is an operator decision — use it alone.
+  const chain: string[] = process.env.GEMINI_MODEL
+    ? [process.env.GEMINI_MODEL]
+    : MODEL_CHAIN;
   const byId = new Map<string, GeminiClassification>();
+
+  // Once a model works, try it first for the remaining batches.
+  let preferredModel: string | null = null;
 
   for (let start = 0; start < clauses.length; start += batchSize) {
     const batch = clauses.slice(start, start + batchSize);
-    for (const [id, result] of await classifyBatch(batch)) byId.set(id, result);
+    const order: string[] = preferredModel
+      ? [preferredModel, ...chain.filter((model) => model !== preferredModel)]
+      : chain;
+
+    let lastError: unknown;
+    let results: Map<string, GeminiClassification> | null = null;
+    for (const model of order) {
+      try {
+        results = await classifyBatch(batch, model, apiKey);
+        preferredModel = model;
+        break;
+      } catch (error) {
+        if (error instanceof GeminiHttpError && FATAL_STATUSES.has(error.status)) {
+          throw error; // identical failure on every model — no point continuing
+        }
+        lastError = error;
+      }
+    }
+    if (!results) throw lastError;
+
+    for (const [id, result] of results) byId.set(id, result);
   }
 
   return clauses.map((clause) => {
