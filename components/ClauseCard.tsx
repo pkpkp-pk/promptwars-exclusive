@@ -3,8 +3,11 @@ import type { Clause, ClauseCategory, RiskLevel } from "@/lib/types";
 
 /*
  * One clause from the deterministic parser, with its classification when
- * available. The clause text is always shown verbatim — the explanation sits
- * beside it as a margin note, never replaces it.
+ * available. The plain-language note leads — most tenants want the meaning,
+ * not the legalese — and the clause text follows verbatim under its own label,
+ * so the summary never stands in for the source. Collapsed mode (the
+ * review screen's "Collapse all") shows the header and note only; the text
+ * comes back with "Expand all".
  */
 
 const CATEGORY_LABELS: Record<ClauseCategory, string> = {
@@ -23,11 +26,18 @@ const NOTE_BORDERS: Record<RiskLevel, string> = {
   risky: "border-risky/50",
 };
 
-export default function ClauseCard({ clause }: { clause: Clause }) {
+export default function ClauseCard({
+  clause,
+  collapsed = false,
+}: {
+  clause: Clause;
+  collapsed?: boolean;
+}) {
   return (
     <article
       id={`clause-${clause.id}`}
-      className="rounded-lg border border-rule bg-card p-5"
+      tabIndex={-1}
+      className="scroll-mt-6 rounded-lg border border-rule bg-card p-5"
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <span className="text-sm text-ink-muted">
@@ -39,10 +49,6 @@ export default function ClauseCard({ clause }: { clause: Clause }) {
         </span>
       </div>
 
-      <p className="mt-3 max-w-[68ch] whitespace-pre-line leading-relaxed text-ink">
-        {clause.text}
-      </p>
-
       {clause.explanation ? (
         <div
           className={`mt-4 border-l-2 pl-4 ${
@@ -50,11 +56,22 @@ export default function ClauseCard({ clause }: { clause: Clause }) {
           }`}
         >
           <span className="text-sm text-ink-muted">In plain language</span>
-          <p className="font-serif italic leading-relaxed text-ink-muted">
+          <p className="mt-1 font-serif italic leading-relaxed text-ink-muted">
             {clause.explanation}
           </p>
         </div>
+      ) : collapsed ? (
+        <p className="mt-4 text-sm text-ink-muted">Not yet reviewed.</p>
       ) : null}
+
+      {collapsed ? null : (
+        <div className="mt-4">
+          <span className="text-sm text-ink-muted">What the lease says</span>
+          <p className="mt-1 max-w-[68ch] whitespace-pre-line leading-relaxed text-ink">
+            {clause.text}
+          </p>
+        </div>
+      )}
     </article>
   );
 }

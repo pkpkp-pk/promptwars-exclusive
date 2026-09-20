@@ -75,15 +75,21 @@ function RiskSummary({ clauses }: { clauses: Clause[] }) {
 
   return (
     <div className="rounded-lg border border-rule bg-card p-4">
-      <div className="flex flex-wrap gap-1" aria-hidden="true">
-        {clauses.map((clause) => (
-          <span
-            key={clause.id}
-            className={`h-2 w-6 rounded-full ${
-              clause.riskLevel ? BAR_CLASSES[clause.riskLevel] : "bg-rule"
-            }`}
-          />
-        ))}
+      <div className="flex flex-wrap gap-1">
+        {clauses.map((clause) => {
+          const riskLabel = clause.riskLevel ?? "not yet reviewed";
+          return (
+            <a
+              key={clause.id}
+              href={`#clause-${clause.id}`}
+              title={`Clause ${clause.order + 1} · ${riskLabel}`}
+              aria-label={`Clause ${clause.order + 1}, ${riskLabel}`}
+              className={`h-2 w-6 rounded-full transition-opacity hover:opacity-70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${
+                clause.riskLevel ? BAR_CLASSES[clause.riskLevel] : "bg-rule"
+              }`}
+            />
+          );
+        })}
       </div>
       <p className="mt-3 text-sm text-ink-muted">{parts.join(" · ")}</p>
     </div>
@@ -111,6 +117,7 @@ export default function ReviewDocument({
   const [clauses, setClauses] = useState<Clause[] | undefined>(initialClauses);
   const [status, setStatus] = useState<Status>("classifying");
   const [error, setError] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
   const startedRef = useRef(false);
 
   const classify = useCallback(async () => {
@@ -151,22 +158,26 @@ export default function ReviewDocument({
     startedRef.current = true;
 
     // Post-hydration only, so the server and client renders stay identical.
-    if (!displayName) {
-      const stored = readFilename(docId);
-      if (stored) setDisplayName(stored);
-    }
+    // The body is async so the state updates land after mount rather than
+    // synchronously inside the effect (react-hooks/set-state-in-effect).
+    void (async () => {
+      if (!displayName) {
+        const stored = readFilename(docId);
+        if (stored) setDisplayName(stored);
+      }
 
-    if (clauses && allClassified(clauses)) {
-      setStatus("ready"); // already classified (server state)
-      return;
-    }
-    const cached = readCache(docId);
-    if (cached) {
-      setClauses(cached);
-      setStatus("ready");
-      return;
-    }
-    void classify();
+      if (clauses && allClassified(clauses)) {
+        setStatus("ready"); // already classified (server state)
+        return;
+      }
+      const cached = readCache(docId);
+      if (cached) {
+        setClauses(cached);
+        setStatus("ready");
+        return;
+      }
+      await classify();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -223,9 +234,19 @@ export default function ReviewDocument({
       {clauses && clauses.length > 0 && status !== "missing" ? (
         <>
           <RiskSummary clauses={clauses} />
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setCollapsed((value) => !value)}
+              aria-expanded={!collapsed}
+              className="rounded-md px-2 py-1 text-sm text-ink-muted underline underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+            >
+              {collapsed ? "Expand all" : "Collapse all"}
+            </button>
+          </div>
           <div className="flex flex-col gap-4">
             {clauses.map((clause) => (
-              <ClauseCard key={clause.id} clause={clause} />
+              <ClauseCard key={clause.id} clause={clause} collapsed={collapsed} />
             ))}
           </div>
         </>

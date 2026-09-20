@@ -10,6 +10,11 @@
   --standard: #23704a;
   --unusual: #9a6700;
   --risky: #c0331d;
+  --brand-50: #eff6ff;
+  --brand-100: #dbeafe;
+  --brand-500: #3b82f6;
+  --brand-600: #2563eb;
+  --brand-900: #1e3a8a;
 }
 
 @theme inline {
@@ -21,64 +26,93 @@
   --color-standard: var(--standard);
   --color-unusual: var(--unusual);
   --color-risky: var(--risky);
-  --font-sans: var(--font-public-sans), system-ui, sans-serif;
-  --font-serif: var(--font-spectral), Georgia, serif;
+  --color-brand-50: var(--brand-50);
+  --color-brand-100: var(--brand-100);
+  --color-brand-500: var(--brand-500);
+  --color-brand-600: var(--brand-600);
+  --color-brand-900: var(--brand-900);
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-serif: var(--font-playfair), Georgia, serif;
 }
 
 body {
   background: var(--paper);
   color: var(--ink);
-  font-family: var(--font-public-sans), system-ui, sans-serif;
+  font-family: var(--font-inter), system-ui, sans-serif;
 }
 
 /*
- * The one orchestrated moment on the landing page: the sample clause gets
- * annotated — an amber highlight sweeps the flagged phrase, then the
- * plain-language margin note settles in. Fully static under reduced motion.
+ * Clicking a risk pill jumps to its clause — ease into that scroll unless the
+ * visitor asked for reduced motion.
  */
-@keyframes annotate-sweep {
-  from {
-    background-size: 0% 0.8em;
-  }
-  to {
-    background-size: 100% 0.8em;
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
   }
 }
 
-@keyframes annotate-note {
+/*
+ * Flagged phrase in the landing sample clause: a yellow underline fill that
+ * expands to a full highlight on hover.
+ */
+.annotation-highlight {
+  background-image: linear-gradient(to right, #fef08a 0%, #fef08a 100%);
+  background-repeat: no-repeat;
+  background-size: 100% 40%;
+  background-position: 0 85%;
+  transition: background-size 0.2s ease-in-out;
+}
+
+.annotation-highlight:hover {
+  background-size: 100% 100%;
+}
+
+/*
+ * Landing sections stagger in on first paint. `.opacity-0-init` hides them
+ * until the animation starts — under reduced motion both are disabled and
+ * content is simply visible.
+ */
+@keyframes fade-in-up {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(20px);
   }
   to {
     opacity: 1;
-    transform: none;
+    transform: translateY(0);
   }
 }
 
-.annotate-mark {
-  color: inherit;
-  background-color: transparent;
-  background-image: linear-gradient(
-    to right,
-    color-mix(in srgb, var(--unusual) 24%, transparent),
-    color-mix(in srgb, var(--unusual) 24%, transparent)
-  );
-  background-repeat: no-repeat;
-  background-size: 100% 0.8em;
-  background-position: 0 78%;
-  padding: 0 0.08em;
-  border-bottom: 2px solid color-mix(in srgb, var(--unusual) 55%, transparent);
-  animation: annotate-sweep 800ms ease-out 350ms both;
+.opacity-0-init {
+  opacity: 0;
 }
 
-.annotate-note {
-  animation: annotate-note 500ms ease-out 1200ms both;
+.animate-fade-in-up {
+  animation: fade-in-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-delay-100 {
+  animation-delay: 100ms;
+}
+
+.animate-delay-200 {
+  animation-delay: 200ms;
+}
+
+.animate-delay-300 {
+  animation-delay: 300ms;
+}
+
+.animate-delay-400 {
+  animation-delay: 400ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .annotate-mark,
-  .annotate-note {
+  .opacity-0-init {
+    opacity: 1;
+  }
+
+  .animate-fade-in-up {
     animation: none;
   }
 }

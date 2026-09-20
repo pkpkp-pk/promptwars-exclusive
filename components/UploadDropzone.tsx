@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { CloudUpload, FileType, HardDrive, ShieldCheck } from "lucide-react";
 
 const MAX_SIZE_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"] as const;
@@ -97,10 +98,10 @@ export default function UploadDropzone() {
   return (
     <div>
       <label
-        className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed bg-card px-6 py-10 text-center transition-colors focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ink ${
+        className={`group relative flex cursor-pointer flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed px-6 py-16 text-center transition-all focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand-600 ${
           dragActive
-            ? "border-ink bg-paper"
-            : "border-rule hover:border-ink-muted"
+            ? "border-brand-400 bg-brand-50"
+            : "border-slate-200 bg-slate-50/50 hover:border-brand-300 hover:bg-brand-50"
         }`}
         onDragOver={(event) => {
           event.preventDefault();
@@ -124,29 +125,47 @@ export default function UploadDropzone() {
           className="sr-only"
           onChange={(event) => pickFile(event.target.files?.[0])}
         />
-        <span className="font-serif text-xl font-medium">
-          Drop your lease here
-        </span>
-        <span className="text-ink-muted">
-          or <span className="underline underline-offset-2">browse files</span>
-        </span>
-        <span className="mt-2 max-w-[48ch] text-sm text-ink-muted">
-          PDF or DOCX, up to 10 MB. Your document stays in this session and is
-          not stored anywhere else.
-        </span>
+        <div className="flex h-16 w-16 items-center justify-center rounded-full border border-slate-100 bg-white text-slate-400 shadow-sm transition-transform duration-300 group-hover:scale-110 group-hover:text-brand-600">
+          <CloudUpload className="h-8 w-8" aria-hidden />
+        </div>
+        <div className="flex flex-col items-center gap-1">
+          <span className="font-serif text-2xl font-medium text-slate-900">
+            Upload your lease agreement
+          </span>
+          <span className="text-slate-500">
+            Drag and drop, or{" "}
+            <span className="font-semibold text-brand-600 underline underline-offset-4 group-hover:text-brand-700">
+              browse files
+            </span>
+          </span>
+        </div>
+        <div className="mt-2 flex items-center gap-4 text-xs font-medium text-slate-400">
+          <span className="flex items-center gap-1">
+            <FileType className="h-3.5 w-3.5" aria-hidden /> PDF or DOCX
+          </span>
+          <span className="h-1 w-1 rounded-full bg-slate-300" />
+          <span className="flex items-center gap-1">
+            <HardDrive className="h-3.5 w-3.5" aria-hidden /> Max 10 MB
+          </span>
+          <span className="hidden h-1 w-1 rounded-full bg-slate-300 sm:block" />
+          <span className="hidden items-center gap-1 sm:flex">
+            <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" aria-hidden />{" "}
+            Secure session only
+          </span>
+        </div>
       </label>
 
       {file ? (
-        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-rule bg-card px-4 py-3">
+        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
           <span className="min-w-0 flex-1 truncate">
             {file.name}{" "}
-            <span className="text-ink-muted">({formatBytes(file.size)})</span>
+            <span className="text-slate-500">({formatBytes(file.size)})</span>
           </span>
           <button
             type="button"
             onClick={analyze}
             disabled={uploading}
-            className="rounded-md bg-ink px-4 py-2 font-medium text-paper transition-opacity hover:opacity-85 disabled:opacity-50"
+            className="rounded-md bg-brand-600 px-4 py-2 font-medium text-white transition-opacity hover:opacity-85 disabled:opacity-50"
           >
             {uploading ? "Reading your lease…" : "Analyze lease"}
           </button>
@@ -157,7 +176,7 @@ export default function UploadDropzone() {
               setError(null);
               if (inputRef.current) inputRef.current.value = "";
             }}
-            className="rounded-md px-2 py-2 text-ink-muted underline underline-offset-2 hover:text-ink"
+            className="rounded-md px-2 py-2 text-slate-500 underline underline-offset-2 hover:text-slate-800"
           >
             Remove
           </button>
