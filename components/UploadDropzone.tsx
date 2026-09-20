@@ -76,6 +76,13 @@ export default function UploadDropzone() {
         throw new Error(await serverErrorMessage(response));
       }
       const data = (await response.json()) as UploadResponse;
+      try {
+        // The review page may render outside the store-owning function, so
+        // carry the filename along for the trip.
+        window.sessionStorage.setItem(`plainlease:name:${data.docId}`, file.name);
+      } catch {
+        // Storage unavailable — the review page falls back to a generic title.
+      }
       router.push(`/review/${data.docId}`);
     } catch (error) {
       setUploading(false);

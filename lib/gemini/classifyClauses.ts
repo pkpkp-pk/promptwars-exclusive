@@ -98,7 +98,17 @@ async function classifyBatch(batch: Clause[]): Promise<Map<string, GeminiClassif
   });
 
   if (!response.ok) {
-    throw new Error(`Gemini API request failed with status ${response.status}`);
+    // Keep the API's own reason (e.g. "API key not valid") — it's what makes
+    // a production failure diagnosable from the route's logs and error body.
+    let detail = "";
+    try {
+      const text = await response.text();
+      const parsed = JSON.parse(text) as { error?: { message?: string } };
+      if (parsed.error?.message) detail = `: ${parsed.error.message.slice(0, 200)}`;
+    } catch {
+      // Non-JSON error body — the status alone is still thrown.
+    }
+    throw new Error(`Gemini API request failed with status ${response.status}${detail}`);
   }
 
   const data = (await response.json()) as {

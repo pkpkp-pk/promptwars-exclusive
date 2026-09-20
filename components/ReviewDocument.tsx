@@ -22,6 +22,7 @@ const GENERIC_ERROR =
   "Something went wrong while analyzing your lease. Please try again.";
 
 const CACHE_KEY = (docId: string) => `plainlease:doc:${docId}`;
+const NAME_KEY = (docId: string) => `plainlease:name:${docId}`;
 
 const BAR_CLASSES: Record<RiskLevel, string> = {
   standard: "bg-standard",
@@ -89,6 +90,14 @@ function RiskSummary({ clauses }: { clauses: Clause[] }) {
   );
 }
 
+function readFilename(docId: string): string | undefined {
+  try {
+    return window.sessionStorage.getItem(NAME_KEY(docId)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function ReviewDocument({
   docId,
   filename,
@@ -98,6 +107,7 @@ export default function ReviewDocument({
   filename?: string;
   initialClauses?: Clause[];
 }) {
+  const [displayName, setDisplayName] = useState(filename);
   const [clauses, setClauses] = useState<Clause[] | undefined>(initialClauses);
   const [status, setStatus] = useState<Status>("classifying");
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +150,12 @@ export default function ReviewDocument({
     if (startedRef.current) return;
     startedRef.current = true;
 
+    // Post-hydration only, so the server and client renders stay identical.
+    if (!displayName) {
+      const stored = readFilename(docId);
+      if (stored) setDisplayName(stored);
+    }
+
     if (clauses && allClassified(clauses)) {
       setStatus("ready"); // already classified (server state)
       return;
@@ -158,7 +174,7 @@ export default function ReviewDocument({
     <div className="flex flex-col gap-6">
       <header>
         <h1 className="font-serif text-3xl font-medium leading-tight tracking-tight">
-          {filename ?? "Your lease"}
+          {displayName ?? "Your lease"}
         </h1>
         <p className="mt-2 text-ink-muted">
           {clauses

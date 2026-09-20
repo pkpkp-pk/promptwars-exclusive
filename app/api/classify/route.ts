@@ -48,7 +48,15 @@ export async function POST(request: Request): Promise<Response> {
     const classified = await classifyClauses(clauses);
     updateClauses(docId, classified);
     return Response.json({ clauses: classified });
-  } catch {
-    return errorResponse(502, "The analysis service couldn’t be reached. Please try again.");
+  } catch (error) {
+    // Surface the upstream reason (status + API message) in the logs and the
+    // response so a misconfigured key or quota issue is diagnosable in
+    // production instead of presenting as an opaque 502.
+    const detail = error instanceof Error ? error.message : "unknown error";
+    console.error("[/api/classify] Gemini call failed:", detail);
+    return errorResponse(
+      502,
+      `The analysis service couldn’t be reached (${detail}). Please try again.`,
+    );
   }
 }

@@ -134,6 +134,21 @@ describe("classifyClauses", () => {
     await expect(classifyClauses(threeClauses())).rejects.toThrow(/status 429/);
   });
 
+  it("includes the API's own error detail when Gemini rejects the request", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: { message: "API key not valid. Please pass a valid API key." },
+        }),
+        { status: 403 },
+      ),
+    );
+
+    await expect(classifyClauses(threeClauses())).rejects.toThrow(
+      /status 403: API key not valid/,
+    );
+  });
+
   it("throws when no API key is configured", async () => {
     vi.stubEnv("GEMINI_API_KEY", "");
 

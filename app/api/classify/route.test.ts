@@ -116,3 +116,24 @@ it("returns 502 when the Gemini call fails", async () => {
   const body = (await response.json()) as { error: string };
   expect(body.error).toMatch(/try again/i);
 });
+
+it("surfaces the upstream failure detail so the cause is diagnosable", async () => {
+  storedDoc("d1", ["1. Rent clause."]);
+  fetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({ error: { message: "API key not valid. Please pass a valid API key." } }),
+      { status: 403 },
+    ),
+  );
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  const response = await classify({ docId: "d1" });
+  expect(response.status).toBe(502);
+  const body = (await response.json()) as { error: string };
+  expect(body.error).toMatch(/status 403/);
+  expect(body.error).toMatch(/API key not valid/);
+  // The full detail also lands in the server logs (visible in Vercel).
+  expect(errorSpy).toHaveBeenCalled();
+
+  errorSpy.mockRestore();
+});
