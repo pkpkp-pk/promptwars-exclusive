@@ -71,5 +71,12 @@ export function segmentClauses(rawText: string, docId: string): Clause[] {
   return source
     .map((chunk) => chunk.trim())
     .filter((chunk) => chunk.length > 0)
-    .map((text, order) => ({ id: `${docId}-c${order}`, docId, text, order }));
+    // Collapse the source's hard line wraps (PDF page layout) into single
+    // spaces so clause text is flowing prose, not visibly-wrapped lines.
+    .map((text, order) => ({
+      id: `${docId}-c${order}`,
+      docId,
+      text: text.replace(/\s+/g, " "),
+      order,
+    }));
 }

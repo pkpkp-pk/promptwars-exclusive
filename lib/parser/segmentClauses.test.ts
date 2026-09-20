@@ -57,6 +57,16 @@ describe("segmentClauses", () => {
     expect(clauses[0]?.text).toContain("Sunita Deshmukh");
   });
 
+  it("collapses source line wraps into flowing prose with no internal line breaks", () => {
+    // PDF extraction keeps the page's hard line breaks; clause text must not.
+    const wrapped =
+      "3. That the Tenant shall pay to the Owner a monthly\nmaintenance charge of Rs.(Amount in\nNumbers) towards the maintenance of Generator & Elevator, Salaries towards guards,\nCharges for Electricity Maintenance for Common Areas\nand towards maintaining the lawn.";
+    const [clause] = segmentClauses(wrapped, "doc-7");
+    expect(clause?.text).toBe(
+      "3. That the Tenant shall pay to the Owner a monthly maintenance charge of Rs.(Amount in Numbers) towards the maintenance of Generator & Elevator, Salaries towards guards, Charges for Electricity Maintenance for Common Areas and towards maintaining the lawn.",
+    );
+  });
+
   it("never returns an empty clause", () => {
     const clauses = segmentClauses("\n\n   \n1. Only clause.\n\n", "doc-3");
     expect(clauses.map((clause) => clause.text)).toEqual(["1. Only clause."]);
