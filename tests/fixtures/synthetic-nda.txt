@@ -1,0 +1,25 @@
+MUTUAL NON-DISCLOSURE AGREEMENT
+
+This Non-Disclosure Agreement is made at Hyderabad on this 9th day of June, 2026, between Kavya Multimedia Labs Pvt. Ltd., hereinafter the "Disclosing Party", and Rohan Electricals LLP, hereinafter the "Receiving Party", collectively the "Parties".
+
+1. "Confidential Information" means all information disclosed by the Disclosing Party to the Receiving Party, whether orally, in writing, or in electronic form, that is designated as confidential or that a reasonable person would understand to be confidential, including business plans, customer lists, financial statements, technical designs, and software source code.
+
+2. The Receiving Party shall use the Confidential Information solely for the purpose of evaluating a proposed business collaboration between the Parties, and shall not use it for its own commercial advantage or for any other purpose whatsoever.
+
+3. The Receiving Party shall protect the Confidential Information with at least the same degree of care it applies to its own confidential information, and in no event with less than reasonable care.
+
+4. The Receiving Party may disclose Confidential Information only to those of its employees, advisors, and auditors who need to know it for the stated purpose and who are bound by written confidentiality obligations no less protective than those in this Agreement.
+
+5. The obligations under this Agreement shall not apply to information that is or becomes publicly available through no fault of the Receiving Party, was lawfully known to it before disclosure, is independently developed without use of the Confidential Information, or is rightfully received from a third party without restriction.
+
+6. If the Receiving Party is required by law, regulation, or order of a court to disclose Confidential Information, it shall give the Disclosing Party prompt written notice, where legally permitted, and shall disclose only the minimum information so required.
+
+7. This Agreement shall remain in force for two years from the date first written above, and the confidentiality obligations shall survive for a further three years after its expiry or after the return of the Confidential Information, whichever occurs later.
+
+8. Upon written request of the Disclosing Party, or upon expiry of this Agreement, the Receiving Party shall promptly return or destroy all copies of the Confidential Information in its possession or control and shall confirm such return or destruction in writing.
+
+9. The Parties acknowledge that a breach of this Agreement may cause irreparable harm for which monetary damages would be an inadequate remedy, and that the Disclosing Party shall be entitled to seek injunctive relief in addition to all other remedies available at law.
+
+10. This Agreement shall be governed by the laws of India, and the courts at Hyderabad shall have exclusive jurisdiction over any dispute arising out of or in connection with it.
+
+IN WITNESS WHEREOF, the Parties have executed this Agreement on the day and year first above written.

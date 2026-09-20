@@ -1,4 +1,4 @@
-import type { Clause, Document } from "@/lib/types";
+import type { Clause, Document, DocumentType } from "@/lib/types";
 
 /*
  * Session document store (AGENTS.md §3/§4): in-memory for the MVP, no
@@ -34,4 +34,13 @@ export function clearDocuments(): void {
 export function updateClauses(docId: string, clauses: Clause[]): void {
   const stored = documents.get(docId);
   if (stored) stored.clauses = clauses;
+}
+
+/**
+ * Stamps the user-confirmed document type on a stored document (AGENTS2.md
+ * §2.4) — called by /api/classify once classification succeeds on that type.
+ */
+export function setConfirmedType(docId: string, confirmedType: DocumentType): void {
+  const stored = documents.get(docId);
+  if (stored) stored.document.confirmedType = confirmedType;
 }

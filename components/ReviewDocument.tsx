@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import ClauseCard from "./ClauseCard";
 import Disclaimer from "./Disclaimer";
-import type { Clause, RiskLevel } from "@/lib/types";
+import TypeConfirmBanner from "./TypeConfirmBanner";
+import type { Clause, DocumentType, RiskLevel } from "@/lib/types";
+import { TYPE_LABELS } from "@/lib/documentTypes/config";
 
 /*
  * Review screen container (Phase 4). The clause text comes from the
@@ -15,14 +17,21 @@ import type { Clause, RiskLevel } from "@/lib/types";
  * component always drives classification itself, with a session cache so a
  * refresh doesn't re-pay the Gemini call.
  *
+ * Classification waits for the user to confirm a document type
+ * (AGENTS2.md §2 constraint 4): the confirmed type picks the category
+ * taxonomy, so it is part of the classify request AND the cache key — a
+ * cached run from a different type can never leak its labels into this one.
+ *
  * The Q&A panel (Phase 5) will slot in below the clause list.
  */
 
 const GENERIC_ERROR =
-  "Something went wrong while analyzing your lease. Please try again.";
+  "Something went wrong while analyzing your document. Please try again.";
 
-const CACHE_KEY = (docId: string) => `plainlease:doc:${docId}`;
+const CACHE_KEY = (docId: string, type: DocumentType) =>
+  `plainlease:doc:${docId}:${type}`;
 const NAME_KEY = (docId: string) => `plainlease:name:${docId}`;
+const TYPE_KEY = (docId: string) => `plainlease:type:${docId}`;
 
 const BAR_CLASSES: Record<RiskLevel, string> = {
   standard: "bg-standard",
@@ -30,15 +39,23 @@ const BAR_CLASSES: Record<RiskLevel, string> = {
   risky: "bg-risky",
 };
 
-type Status = "classifying" | "ready" | "error" | "missing";
+type Status = "confirming" | "classifying" | "ready" | "error" | "missing";
+
+const DOCUMENT_TYPES = Object.keys(TYPE_LABELS) as DocumentType[];
+
+function isDocumentType(value: unknown): value is DocumentType {
+  return (
+    typeof value === "string" && DOCUMENT_TYPES.includes(value as DocumentType)
+  );
+}
 
 function allClassified(clauses: Clause[]): boolean {
   return clauses.length > 0 && clauses.every((clause) => clause.riskLevel !== undefined);
 }
 
-function readCache(docId: string): Clause[] | null {
+function readCache(docId: string, type: DocumentType): Clause[] | null {
   try {
-    const raw = window.sessionStorage.getItem(CACHE_KEY(docId));
+    const raw = window.sessionStorage.getItem(CACHE_KEY(docId, type));
     if (!raw) return null;
     const clauses = JSON.parse(raw) as Clause[];
     return Array.isArray(clauses) && clauses.length > 0 ? clauses : null;
@@ -47,9 +64,9 @@ function readCache(docId: string): Clause[] | null {
   }
 }
 
-function writeCache(docId: string, clauses: Clause[]): void {
+function writeCache(docId: string, type: DocumentType, clauses: Clause[]): void {
   try {
-    window.sessionStorage.setItem(CACHE_KEY(docId), JSON.stringify(clauses));
+    window.sessionStorage.setItem(CACHE_KEY(docId, type), JSON.stringify(clauses));
   } catch {
     // Storage unavailable (private mode, quota) — caching is optional.
   }
@@ -104,54 +121,113 @@ function readFilename(docId: string): string | undefined {
   }
 }
 
+interface TypeSuggestion {
+  type: DocumentType;
+  confidence?: number;
+}
+
+function readStoredType(docId: string): TypeSuggestion | null {
+  try {
+    const raw = window.sessionStorage.getItem(TYPE_KEY(docId));
+    if (!raw) return null;
+    // sessionStorage holds whatever was last written — validate before it
+    // reaches the banner, or a stale/foreign entry gets shown as a suggestion.
+    const parsed = JSON.parse(raw) as { type?: unknown; confidence?: unknown };
+    if (!isDocumentType(parsed.type)) return null;
+    return {
+      type: parsed.type,
+      confidence: typeof parsed.confidence === "number" ? parsed.confidence : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export default function ReviewDocument({
   docId,
   filename,
   initialClauses,
+  suggestedType,
+  suggestedTypeConfidence,
+  confirmedType: previouslyConfirmed,
 }: {
   docId: string;
   filename?: string;
   initialClauses?: Clause[];
+  /** Upload-time suggestion, when the store-owning instance still has the document. */
+  suggestedType?: DocumentType;
+  suggestedTypeConfidence?: number;
+  /** Set when this instance's store already recorded a user confirmation. */
+  confirmedType?: DocumentType;
 }) {
   const [displayName, setDisplayName] = useState(filename);
   const [clauses, setClauses] = useState<Clause[] | undefined>(initialClauses);
-  const [status, setStatus] = useState<Status>("classifying");
+  const [status, setStatus] = useState<Status>("confirming");
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [confirmedType, setConfirmedType] = useState<DocumentType | undefined>(undefined);
+  // Props are stable for a server-rendered page, so seeding from them keeps
+  // the server and client markup identical before the sessionStorage check.
+  const [suggestion, setSuggestion] = useState<TypeSuggestion | undefined>(
+    suggestedType
+      ? { type: suggestedType, confidence: suggestedTypeConfidence }
+      : undefined,
+  );
   const startedRef = useRef(false);
 
-  const classify = useCallback(async () => {
-    setStatus("classifying");
-    setError(null);
-    try {
-      const response = await fetch("/api/classify", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ docId }),
-      });
-      if (response.status === 404) {
-        setStatus("missing");
+  const classify = useCallback(
+    async (type: DocumentType) => {
+      setStatus("classifying");
+      setError(null);
+      try {
+        const response = await fetch("/api/classify", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ docId, confirmedType: type }),
+        });
+        if (response.status === 404) {
+          setStatus("missing");
+          return;
+        }
+        if (!response.ok) {
+          let message = GENERIC_ERROR;
+          try {
+            const body = (await response.json()) as { error?: string };
+            if (body.error) message = body.error;
+          } catch {
+            // Not a JSON error body — keep the generic message.
+          }
+          throw new Error(message);
+        }
+        const body = (await response.json()) as { clauses: Clause[] };
+        setClauses(body.clauses);
+        setStatus("ready");
+        if (allClassified(body.clauses)) writeCache(docId, type, body.clauses);
+      } catch (error) {
+        setStatus("error");
+        setError(error instanceof Error && error.message ? error.message : GENERIC_ERROR);
+      }
+    },
+    [docId],
+  );
+
+  // The one gate into classification: the type is confirmed by the user,
+  // never assumed (AGENTS2.md §2 constraint 4).
+  const handleConfirm = useCallback(
+    (type: DocumentType) => {
+      setConfirmedType(type);
+      const cached = readCache(docId, type);
+      if (cached) {
+        // Same document, same type, same session — reuse the earlier run
+        // instead of re-paying the Gemini call.
+        setClauses(cached);
+        setStatus("ready");
         return;
       }
-      if (!response.ok) {
-        let message = GENERIC_ERROR;
-        try {
-          const body = (await response.json()) as { error?: string };
-          if (body.error) message = body.error;
-        } catch {
-          // Not a JSON error body — keep the generic message.
-        }
-        throw new Error(message);
-      }
-      const body = (await response.json()) as { clauses: Clause[] };
-      setClauses(body.clauses);
-      setStatus("ready");
-      if (allClassified(body.clauses)) writeCache(docId, body.clauses);
-    } catch (error) {
-      setStatus("error");
-      setError(error instanceof Error && error.message ? error.message : GENERIC_ERROR);
-    }
-  }, [docId]);
+      void classify(type);
+    },
+    [docId, classify],
+  );
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -166,17 +242,23 @@ export default function ReviewDocument({
         if (stored) setDisplayName(stored);
       }
 
-      if (clauses && allClassified(clauses)) {
-        setStatus("ready"); // already classified (server state)
-        return;
+      if (!suggestion) {
+        // The server store is authoritative when it still has the document;
+        // sessionStorage carries the suggestion across renders where this
+        // page ran in a different instance than the store-owning one.
+        const stored = readStoredType(docId);
+        if (stored) setSuggestion(stored);
       }
-      const cached = readCache(docId);
-      if (cached) {
-        setClauses(cached);
+
+      // Fast path: this instance already classified the document under a
+      // confirmed type (an earlier visit in the same session) — show those
+      // results instead of re-asking. The recorded type is required, not
+      // just the classified clauses: without it the category labels would
+      // be translated through a guessed taxonomy.
+      if (previouslyConfirmed && clauses && allClassified(clauses)) {
+        setConfirmedType(previouslyConfirmed);
         setStatus("ready");
-        return;
       }
-      await classify();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -185,7 +267,7 @@ export default function ReviewDocument({
     <div className="flex flex-col gap-6">
       <header>
         <h1 className="font-serif text-3xl font-medium leading-tight tracking-tight">
-          {displayName ?? "Your lease"}
+          {displayName ?? "Your document"}
         </h1>
         <p className="mt-2 text-ink-muted">
           {clauses
@@ -196,10 +278,19 @@ export default function ReviewDocument({
 
       <Disclaimer />
 
+      <TypeConfirmBanner
+        suggestedType={suggestion?.type}
+        suggestedTypeConfidence={suggestion?.confidence}
+        initialSelected={previouslyConfirmed ?? suggestion?.type}
+        confirmedType={confirmedType}
+        onConfirm={handleConfirm}
+        disabled={status === "classifying"}
+      />
+
       {status === "classifying" ? (
         <p className="flex items-center gap-2.5 text-ink-muted">
           <span className="h-2 w-2 rounded-full bg-ink-muted motion-safe:animate-pulse" />
-          Reading your lease and flagging risks…
+          Reading your document and flagging risks…
         </p>
       ) : null}
 
@@ -208,8 +299,8 @@ export default function ReviewDocument({
           <p className="text-risky">{error}</p>
           <button
             type="button"
-            onClick={() => void classify()}
-            className="mt-4 rounded-md bg-ink px-4 py-2 font-medium text-paper transition-opacity hover:opacity-85"
+            onClick={() => confirmedType && void classify(confirmedType)}
+            className="mt-4 rounded-md bg-ink px-4 py-2 font-medium text-paper transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
           >
             Try again
           </button>
@@ -226,7 +317,7 @@ export default function ReviewDocument({
             href="/"
             className="mt-4 inline-block rounded-md bg-ink px-4 py-2 font-medium text-paper transition-opacity hover:opacity-85"
           >
-            Upload your lease again
+            Upload your document again
           </Link>
         </div>
       ) : null}
@@ -246,7 +337,12 @@ export default function ReviewDocument({
           </div>
           <div className="flex flex-col gap-4">
             {clauses.map((clause) => (
-              <ClauseCard key={clause.id} clause={clause} collapsed={collapsed} />
+              <ClauseCard
+                key={clause.id}
+                clause={clause}
+                confirmedType={confirmedType}
+                collapsed={collapsed}
+              />
             ))}
           </div>
         </>

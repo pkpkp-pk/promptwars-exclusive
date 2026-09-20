@@ -3,10 +3,10 @@ import type { Clause } from "@/lib/types";
 /*
  * Deterministic clause segmentation (Phases 1–2). Splits on numbered clause
  * markers; otherwise falls back to blank-line paragraphs, with short ALL-CAPS
- * heading paragraphs (RENT, SECURITY DEPOSIT, …) merged into the paragraph
- * that follows them so headings never stand alone as clauses. Numbering is
- * the stronger signal, so a lease that numbers its clauses is always split on
- * the numbers.
+ * heading paragraphs (RENT, PAYMENT TERMS, DATA SHARING, …) merged into the
+ * paragraph that follows them so headings never stand alone as clauses.
+ * Numbering is the stronger signal, so a document that numbers its clauses is
+ * always split on the numbers.
  *
  * Pure function, no LLM and no I/O — constraint 3 in AGENTS.md: the LLM layer
  * only ever sees clauses this function found.

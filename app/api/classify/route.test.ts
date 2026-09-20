@@ -1,7 +1,21 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { clearDocuments, getClauses, saveDocument } from "@/lib/store";
+import { clearDocuments, getClauses, getDocument, saveDocument } from "@/lib/store";
+import { classifyClauses } from "@/lib/gemini/classifyClauses";
+import { CATEGORY_MAP, TYPE_LABELS } from "@/lib/documentTypes/config";
+import type { Clause, Document, DocumentType } from "@/lib/types";
 import { POST } from "./route";
-import type { Clause, Document } from "@/lib/types";
+
+/*
+ * classifyClauses is mocked pass-through (it calls the real implementation by
+ * default) so one test can simulate a classifier returning a category outside
+ * the confirmed type's taxonomy — impossible through fetch mocking alone,
+ * because the real classifyClauses validates against the same taxonomy the
+ * route passes in.
+ */
+vi.mock("@/lib/gemini/classifyClauses", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/gemini/classifyClauses")>();
+  return { ...actual, classifyClauses: vi.fn(actual.classifyClauses) };
+});
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -16,12 +30,14 @@ afterEach(() => {
   clearDocuments();
 });
 
-function storedDoc(id: string, clauseTexts: string[]): void {
+function storedDoc(id: string, clauseTexts: string[], suggestedType: DocumentType = "lease"): void {
   const document: Document = {
     id,
-    filename: "lease.pdf",
+    filename: "document.pdf",
     rawText: clauseTexts.join("\n"),
     uploadedAt: "2026-09-19T00:00:00.000Z",
+    suggestedType,
+    suggestedTypeConfidence: 0.9,
   };
   const clauses: Clause[] = clauseTexts.map((text, order) => ({
     id: `${id}-c${order}`,
@@ -42,15 +58,51 @@ async function classify(body: unknown): Promise<Response> {
   );
 }
 
+/** The request the route sent to Gemini, parsed from the fetch mock. */
+function geminiRequestBody(call: number): {
+  systemInstruction: { parts: { text: string }[] };
+  generationConfig: {
+    responseSchema: { items: { properties: { category: { enum: string[] } } } };
+  };
+} {
+  return JSON.parse(String(fetchMock.mock.calls[call]?.[1]?.body));
+}
+
+function geminiOk(payload: unknown): Response {
+  return new Response(
+    JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(payload) }] } }],
+    }),
+    { status: 200 },
+  );
+}
+
 it("rejects a request without a docId", async () => {
-  const response = await classify({});
+  const response = await classify({ confirmedType: "lease" });
   expect(response.status).toBe(400);
   const body = (await response.json()) as { error: string };
   expect(body.error).toMatch(/docId/i);
 });
 
+it("rejects a request without a confirmedType", async () => {
+  const response = await classify({ docId: "d1" });
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { error: string };
+  expect(body.error).toMatch(/confirmedType/i);
+  // Nothing was classified — the type picks the taxonomy, so nothing may run.
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("rejects a confirmedType outside the five supported types", async () => {
+  const response = await classify({ docId: "d1", confirmedType: "loan_agreement" });
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { error: string };
+  expect(body.error).toMatch(/confirmedType/i);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
 it("returns 404 for an unknown document", async () => {
-  const response = await classify({ docId: "missing" });
+  const response = await classify({ docId: "missing", confirmedType: "lease" });
   expect(response.status).toBe(404);
   const body = (await response.json()) as { error: string };
   expect(body.error).toMatch(/find that document/i);
@@ -60,7 +112,7 @@ it("returns 503 when the Gemini key is not configured", async () => {
   vi.stubEnv("GEMINI_API_KEY", "");
   storedDoc("d1", ["1. Rent clause."]);
 
-  const response = await classify({ docId: "d1" });
+  const response = await classify({ docId: "d1", confirmedType: "lease" });
   expect(response.status).toBe(503);
   const body = (await response.json()) as { error: string };
   expect(body.error).toMatch(/configured/i);
@@ -72,28 +124,13 @@ it("classifies a stored document and persists the results", async () => {
     "2. The security deposit of Rs. 1,08,000 is refundable.",
   ]);
   fetchMock.mockResolvedValueOnce(
-    new Response(
-      JSON.stringify({
-        candidates: [
-          {
-            content: {
-              parts: [
-                {
-                  text: JSON.stringify([
-                    { id: "d1-c0", category: "rent", riskLevel: "standard", explanation: "Sets the monthly rent." },
-                    { id: "d1-c1", category: "deposit", riskLevel: "unusual", explanation: "States a large refundable deposit." },
-                  ]),
-                },
-              ],
-            },
-          },
-        ],
-      }),
-      { status: 200 },
-    ),
+    geminiOk([
+      { id: "d1-c0", category: "rent", riskLevel: "standard", explanation: "Sets the monthly rent." },
+      { id: "d1-c1", category: "deposit", riskLevel: "unusual", explanation: "States a large refundable deposit." },
+    ]),
   );
 
-  const response = await classify({ docId: "d1" });
+  const response = await classify({ docId: "d1", confirmedType: "lease" });
   expect(response.status).toBe(200);
 
   const body = (await response.json()) as { clauses: Clause[] };
@@ -102,16 +139,67 @@ it("classifies a stored document and persists the results", async () => {
   expect(body.clauses[1]?.riskLevel).toBe("unusual");
   expect(body.clauses[1]?.explanation).toBe("States a large refundable deposit.");
 
-  // The store is updated, so a later render of the review page sees results.
+  // The store is updated, so a later render of the review page sees results,
+  // and the confirmed type is stamped on the stored document.
   expect(getClauses("d1")?.[1]?.riskLevel).toBe("unusual");
+  expect(getDocument("d1")?.confirmedType).toBe("lease");
   expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it("classifies with the confirmed type's taxonomy, even when it overrides the suggestion", async () => {
+  // Upload suggested "lease" (wrong); the user overrides to "nda". The
+  // confirmed type — not the suggestion — must drive the taxonomy.
+  storedDoc("d2", ["1. The Receiving Party shall keep the Disclosing Party's information confidential."], "lease");
+  fetchMock.mockResolvedValueOnce(
+    geminiOk([
+      { id: "d2-c0", category: "obligations", riskLevel: "standard", explanation: "Requires keeping the other party's information confidential." },
+    ]),
+  );
+
+  const response = await classify({ docId: "d2", confirmedType: "nda" });
+  expect(response.status).toBe(200);
+
+  const body = (await response.json()) as { clauses: Clause[] };
+  expect(body.clauses[0]?.category).toBe("obligations");
+
+  const request = geminiRequestBody(0);
+  expect(request.systemInstruction.parts[0]?.text).toContain(TYPE_LABELS.nda);
+  expect(
+    request.generationConfig.responseSchema.items.properties.category.enum,
+  ).toEqual(CATEGORY_MAP.nda);
+  expect(getDocument("d2")?.confirmedType).toBe("nda");
+});
+
+it("coerces a category outside the confirmed type's taxonomy to other before persisting", async () => {
+  storedDoc("d1", ["1. Late fee clause.", "2. Notice clause.", "3. Unclassified clause."]);
+  // Defense-in-depth path: simulate a classifier returning an unknown
+  // category (the real one re-validates, so fetch mocking can't reach this).
+  vi.mocked(classifyClauses).mockResolvedValueOnce([
+    { id: "d1-c0", docId: "d1", text: "1. Late fee clause.", order: 0, category: "late_fees", riskLevel: "risky", explanation: "Charges a late fee." },
+    { id: "d1-c1", docId: "d1", text: "2. Notice clause.", order: 1, category: "termination", riskLevel: "standard", explanation: "Sets a notice period." },
+    { id: "d1-c2", docId: "d1", text: "3. Unclassified clause.", order: 2 },
+  ]);
+
+  const response = await classify({ docId: "d1", confirmedType: "lease" });
+  expect(response.status).toBe(200);
+
+  const body = (await response.json()) as { clauses: Clause[] };
+  // Invalid category becomes "other"; valid ones pass through and clauses the
+  // classifier left unclassified stay unclassified.
+  expect(body.clauses[0]?.category).toBe("other");
+  expect(body.clauses[1]?.category).toBe("termination");
+  expect(body.clauses[2]?.category).toBeUndefined();
+
+  // The sanitized clauses are what get stored, not the raw classifier output.
+  expect(getClauses("d1")?.[0]?.category).toBe("other");
+  expect(getDocument("d1")?.confirmedType).toBe("lease");
 });
 
 it("returns 502 when the Gemini call fails on every model", async () => {
   storedDoc("d1", ["1. Rent clause."]);
   fetchMock.mockImplementation(async () => new Response("{}", { status: 500 }));
 
-  const response = await classify({ docId: "d1" });
+  const response = await classify({ docId: "d1", confirmedType: "lease" });
   expect(response.status).toBe(502);
   const body = (await response.json()) as { error: string };
   expect(body.error).toMatch(/try again/i);
@@ -127,7 +215,7 @@ it("surfaces the upstream failure detail so the cause is diagnosable", async () 
   );
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-  const response = await classify({ docId: "d1" });
+  const response = await classify({ docId: "d1", confirmedType: "lease" });
   expect(response.status).toBe(502);
   const body = (await response.json()) as { error: string };
   expect(body.error).toMatch(/status 403/);

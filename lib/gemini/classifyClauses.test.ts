@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { classifyClauses } from "./classifyClauses";
+import { CATEGORY_MAP, TYPE_LABELS } from "@/lib/documentTypes/config";
 import type { Clause } from "@/lib/types";
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -12,6 +13,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // Vitest 3: unstubAllGlobals does not restore stubEnv values — without
+  // this, a pinned-model test leaks GEMINI_MODEL into later fallback tests.
+  vi.unstubAllEnvs();
 });
 
 function clause(id: string, order: number, text: string): Clause {
@@ -26,6 +30,12 @@ function threeClauses(): Clause[] {
   ];
 }
 
+/** The options a lease classification call gets — the real lease taxonomy. */
+const leaseOptions = {
+  categories: CATEGORY_MAP.lease,
+  documentTypeName: TYPE_LABELS.lease,
+};
+
 /** Wraps a payload the way the Gemini REST API returns structured output. */
 function geminiResponse(payload: unknown, status = 200): Response {
   return new Response(
@@ -36,10 +46,16 @@ function geminiResponse(payload: unknown, status = 200): Response {
   );
 }
 
-function requestBody(call: number): {
+interface RequestBody {
+  systemInstruction: { parts: { text: string }[] };
   contents: { parts: { text: string }[] }[];
-  generationConfig: { responseMimeType: string; responseSchema?: unknown };
-} {
+  generationConfig: {
+    responseMimeType: string;
+    responseSchema: { items: { properties: { category: { enum: string[] } } } };
+  };
+}
+
+function requestBody(call: number): RequestBody {
   return JSON.parse(String(fetchMock.mock.calls[call]?.[1]?.body));
 }
 
@@ -53,7 +69,7 @@ describe("classifyClauses", () => {
       ]),
     );
 
-    const classified = await classifyClauses(threeClauses());
+    const classified = await classifyClauses(threeClauses(), leaseOptions);
 
     // One request covering all clauses, not one request per clause.
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -69,7 +85,7 @@ describe("classifyClauses", () => {
   it("sends clause text and ids with a JSON-schema-constrained request", async () => {
     fetchMock.mockResolvedValueOnce(geminiResponse([]));
 
-    await classifyClauses(threeClauses());
+    await classifyClauses(threeClauses(), leaseOptions);
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("generativelanguage.googleapis.com");
@@ -83,7 +99,11 @@ describe("classifyClauses", () => {
     expect(prompt).toContain("monthly rent of Rs. 18,000");
     expect(prompt).toContain("two months' notice");
     expect(body.generationConfig.responseMimeType).toBe("application/json");
-    expect(body.generationConfig.responseSchema).toBeTruthy();
+    // The schema's category enum is built from the passed taxonomy.
+    expect(body.generationConfig.responseSchema.items.properties.category.enum).toEqual(
+      CATEGORY_MAP.lease,
+    );
+    expect(body.systemInstruction.parts[0]?.text).toContain(TYPE_LABELS.lease);
   });
 
   it("chunks large clause lists into sequential batches and merges the results", async () => {
@@ -103,7 +123,7 @@ describe("classifyClauses", () => {
       ),
     );
 
-    const classified = await classifyClauses(clauses, { batchSize: 3 });
+    const classified = await classifyClauses(clauses, { ...leaseOptions, batchSize: 3 });
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(classified).toHaveLength(7);
@@ -119,7 +139,7 @@ describe("classifyClauses", () => {
       ]),
     );
 
-    const classified = await classifyClauses(threeClauses());
+    const classified = await classifyClauses(threeClauses(), leaseOptions);
 
     expect(classified[0]?.category).toBe("rent");
     // Invalid category and the omitted clause stay unclassified, never guessed.
@@ -128,17 +148,65 @@ describe("classifyClauses", () => {
     expect(classified[2]?.riskLevel).toBeUndefined();
   });
 
+  it("builds the prompt and schema from the supplied taxonomy, not a fixed one (NDA)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      geminiResponse([
+        { id: "d1-c0", category: "confidential_info_definition", riskLevel: "standard", explanation: "Defines what counts as confidential information." },
+      ]),
+    );
+
+    const classified = await classifyClauses(threeClauses(), {
+      categories: CATEGORY_MAP.nda,
+      documentTypeName: TYPE_LABELS.nda,
+    });
+
+    const body = requestBody(0);
+    // The schema enum is exactly the passed NDA taxonomy — no lease categories.
+    expect(body.generationConfig.responseSchema.items.properties.category.enum).toEqual(
+      CATEGORY_MAP.nda,
+    );
+    expect(body.generationConfig.responseSchema.items.properties.category.enum).not.toContain("rent");
+
+    const systemPrompt = body.systemInstruction.parts[0]?.text ?? "";
+    expect(systemPrompt).toContain("Non-disclosure agreement");
+    expect(systemPrompt).toContain("confidential_info_definition");
+    // No lease-only wording leaks into a non-lease classification.
+    expect(systemPrompt).not.toContain("residential lease");
+    expect(systemPrompt).not.toContain("tenant");
+
+    expect(classified[0]?.category).toBe("confidential_info_definition");
+  });
+
+  it("rejects a category that belongs to a different type's taxonomy", async () => {
+    fetchMock.mockResolvedValueOnce(
+      geminiResponse([
+        { id: "d1-c0", category: "rent", riskLevel: "standard", explanation: "A lease category, invalid for an NDA." },
+        { id: "d1-c1", category: "duration", riskLevel: "standard", explanation: "States how long the obligations last." },
+      ]),
+    );
+
+    const classified = await classifyClauses(threeClauses(), {
+      categories: CATEGORY_MAP.nda,
+      documentTypeName: TYPE_LABELS.nda,
+    });
+
+    // "rent" is a real lease category but not in the taxonomy passed for this
+    // call, so that clause stays unclassified instead of being mislabeled.
+    expect(classified[0]?.category).toBeUndefined();
+    expect(classified[1]?.category).toBe("duration");
+  });
+
   it("throws the last error when every model in the chain is rate-limited", async () => {
     fetchMock.mockImplementation(async () => new Response("{}", { status: 429 }));
 
-    await expect(classifyClauses(threeClauses())).rejects.toThrow(/status 429/);
+    await expect(classifyClauses(threeClauses(), leaseOptions)).rejects.toThrow(/status 429/);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("uses gemini-3.8-flash as the primary model", async () => {
     fetchMock.mockResolvedValueOnce(geminiResponse([]));
 
-    await classifyClauses(threeClauses());
+    await classifyClauses(threeClauses(), leaseOptions);
 
     const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("models/gemini-3.8-flash:generateContent");
@@ -153,7 +221,7 @@ describe("classifyClauses", () => {
         ]),
       );
 
-    const classified = await classifyClauses(threeClauses());
+    const classified = await classifyClauses(threeClauses(), leaseOptions);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [url1] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -173,7 +241,7 @@ describe("classifyClauses", () => {
         ]),
       );
 
-    const classified = await classifyClauses(threeClauses());
+    const classified = await classifyClauses(threeClauses(), leaseOptions);
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const [url3] = fetchMock.mock.calls[2] as unknown as [string, RequestInit];
@@ -188,7 +256,7 @@ describe("classifyClauses", () => {
       }),
     );
 
-    await expect(classifyClauses(threeClauses())).rejects.toThrow(/status 400/);
+    await expect(classifyClauses(threeClauses(), leaseOptions)).rejects.toThrow(/status 400/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -196,7 +264,7 @@ describe("classifyClauses", () => {
     vi.stubEnv("GEMINI_MODEL", "gemini-2.5-flash");
     fetchMock.mockResolvedValueOnce(new Response("{}", { status: 404 }));
 
-    await expect(classifyClauses(threeClauses())).rejects.toThrow(/status 404/);
+    await expect(classifyClauses(threeClauses(), leaseOptions)).rejects.toThrow(/status 404/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("gemini-2.5-flash");
@@ -212,7 +280,7 @@ describe("classifyClauses", () => {
       ),
     );
 
-    await expect(classifyClauses(threeClauses())).rejects.toThrow(
+    await expect(classifyClauses(threeClauses(), leaseOptions)).rejects.toThrow(
       /status 403: API key not valid/,
     );
   });
@@ -220,6 +288,6 @@ describe("classifyClauses", () => {
   it("throws when no API key is configured", async () => {
     vi.stubEnv("GEMINI_API_KEY", "");
 
-    await expect(classifyClauses(threeClauses())).rejects.toThrow(/GEMINI_API_KEY/);
+    await expect(classifyClauses(threeClauses(), leaseOptions)).rejects.toThrow(/GEMINI_API_KEY/);
   });
 });

@@ -4,7 +4,7 @@ import ReviewDocument from "@/components/ReviewDocument";
 import { getClauses, getDocument } from "@/lib/store";
 
 export const metadata: Metadata = {
-  title: "Lease review",
+  title: "Document review",
 };
 
 /*
@@ -12,7 +12,9 @@ export const metadata: Metadata = {
  * (clause text renders instantly when this function shares the store with
  * the API routes); the client container then drives classification via
  * /api/classify, so the page also works when it renders in a different
- * function than the store-owning one.
+ * function than the store-owning one. The type suggestion and any recorded
+ * confirmation ride along the same way, so a direct URL load still shows
+ * the confirmation banner with the suggestion in it.
  */
 export default async function ReviewPage({ params }: PageProps<"/review/[docId]">) {
   const { docId } = await params;
@@ -24,13 +26,16 @@ export default async function ReviewPage({ params }: PageProps<"/review/[docId]"
         href="/"
         className="text-sm text-ink-muted underline underline-offset-2 hover:text-ink"
       >
-        ← Upload another lease
+        ← Upload another document
       </Link>
       <div className="mt-8">
         <ReviewDocument
           docId={docId}
           filename={document?.filename}
           initialClauses={getClauses(docId)}
+          suggestedType={document?.suggestedType}
+          suggestedTypeConfidence={document?.suggestedTypeConfidence}
+          confirmedType={document?.confirmedType}
         />
       </div>
     </main>

@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CloudUpload, FileType, HardDrive, ShieldCheck } from "lucide-react";
+import type { DocumentType } from "@/lib/types";
 
 const MAX_SIZE_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"] as const;
@@ -12,6 +13,8 @@ type AcceptedExtension = (typeof ACCEPTED_EXTENSIONS)[number];
 interface UploadResponse {
   docId: string;
   clauseCount: number;
+  suggestedType: DocumentType;
+  suggestedTypeConfidence: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -51,7 +54,7 @@ export default function UploadDropzone() {
     if (!ACCEPTED_EXTENSIONS.includes(extension as AcceptedExtension)) {
       setFile(null);
       setError(
-        "That file type isn’t supported. Upload a PDF or DOCX copy of your lease.",
+        "That file type isn’t supported. Upload a PDF or DOCX copy of your document.",
       );
       return;
     }
@@ -81,8 +84,21 @@ export default function UploadDropzone() {
         // The review page may render outside the store-owning function, so
         // carry the filename along for the trip.
         window.sessionStorage.setItem(`plainlease:name:${data.docId}`, file.name);
+        // Same trip for the type suggestion — the review page shows it (with
+        // an override dropdown) before classification runs. Guarded because
+        // the field is only as fresh as the deployed route.
+        if (data.suggestedType) {
+          window.sessionStorage.setItem(
+            `plainlease:type:${data.docId}`,
+            JSON.stringify({
+              type: data.suggestedType,
+              confidence: data.suggestedTypeConfidence,
+            }),
+          );
+        }
       } catch {
-        // Storage unavailable — the review page falls back to a generic title.
+        // Storage unavailable — the review page falls back to server-side
+        // state and asks the user to pick a type outright.
       }
       router.push(`/review/${data.docId}`);
     } catch (error) {
@@ -130,7 +146,7 @@ export default function UploadDropzone() {
         </div>
         <div className="flex flex-col items-center gap-1">
           <span className="font-serif text-2xl font-medium text-slate-900">
-            Upload your lease agreement
+            Upload your agreement
           </span>
           <span className="text-slate-500">
             Drag and drop, or{" "}
@@ -167,7 +183,7 @@ export default function UploadDropzone() {
             disabled={uploading}
             className="rounded-md bg-brand-600 px-4 py-2 font-medium text-white transition-opacity hover:opacity-85 disabled:opacity-50"
           >
-            {uploading ? "Reading your lease…" : "Analyze lease"}
+            {uploading ? "Reading your document…" : "Analyze document"}
           </button>
           <button
             type="button"

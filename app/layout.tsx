@@ -17,9 +17,9 @@ const playfair = Playfair_Display({
 const appName = process.env.NEXT_PUBLIC_APP_NAME ?? "PlainLease";
 
 export const metadata: Metadata = {
-  title: `${appName} — understand your lease before you sign`,
+  title: `${appName} — understand your document before you sign`,
   description:
-    "Upload a residential lease agreement and get every clause explained in plain language, unusual terms flagged, and answers grounded in your document.",
+    "Upload a rental lease, freelance contract, terms & privacy policy, NDA, or employment offer and get every clause explained in plain language, unusual terms flagged, and answers grounded in your document.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

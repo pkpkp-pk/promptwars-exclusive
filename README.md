@@ -1,36 +1,100 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PlainLease
 
-## Getting Started
+A GenAI assistant that helps someone understand, question, and compare a legal
+document before signing or agreeing to it — built for a hackathon themed on
+making legal information and basic legal assistance more accessible.
 
-First, run the development server:
+**This tool provides information, not legal advice.**
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Supported document types
+
+Five, deliberately — not open-ended "any legal document":
+
+| Type | Who's reading it |
+|---|---|
+| Rental lease | A tenant reviewing a rental agreement |
+| Freelance / client contract | A freelancer or gig worker reviewing a client contract |
+| Terms & privacy policy | A consumer reviewing an app or service's terms |
+| Non-disclosure agreement | Someone asked to sign an NDA |
+| Employment offer letter | A candidate reviewing a job offer |
+
+Each type has its own clause-category taxonomy (`lib/documentTypes/config.ts`)
+so risk flagging and checklists stay consistent and testable per type, instead
+of relying on the model to invent categories on the fly.
+
+## How it works
+
+```
+Client (Next.js)
+  → API routes
+      → Deterministic parser (pure functions, no LLM, type-agnostic)
+          → feeds clause text + confirmed document type to
+      → Gemini API (detect type / classify / explain)
+  → both write to
+      → Document store (in-memory session state)
+  → results (risk levels, explanations, citations) flow back to the client
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Why the deterministic / LLM split exists
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Clause segmentation (`lib/parser/segmentClauses.ts`) is a deterministic, pure
+function with no LLM call in it and zero knowledge of document type. The LLM
+only classifies and explains clauses the deterministic layer already found —
+it never decides where a clause starts or ends. The parser's output, plus the
+user-confirmed document type, is the *only* thing the Gemini layer reasons
+about for a given document. This boundary is what prevents hallucination: the
+model can't drift to general legal knowledge because it never sees anything
+but the text in front of it, and the segmentation output is auditable and
+unit-testable without any API calls.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Why document-type confirmation is a user step
 
-## Learn More
+Type detection (`lib/documentTypes/detectType.ts`) is one Gemini call that
+returns a **suggestion** with a confidence score — possibly `none_of_these`
+→ see "Known limitations". A wrong auto-detected type changes which category
+taxonomy gets used downstream, which silently changes every risk flag and
+explanation the user sees. So the suggestion is always shown with an override
+dropdown before classification runs, never applied silently. A misdetection
+is easy to catch and fix; a silent one is not.
 
-To learn more about Next.js, take a look at the following resources:
+## Running locally
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm install
+GEMINI_API_KEY=your-key npm run dev
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Tests:
 
-## Deploy on Vercel
+```bash
+npm test
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Tooling choices
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Next.js (App Router) + TypeScript + Tailwind** — one deployable unit for
+  UI and API routes, typed data models shared across the boundary.
+- **Gemini API** — cheap structured-JSON output (category enums, confidence
+  scores) for classification and detection.
+- **Vitest** — fast, zero-config, runs the same TS the app runs.
+- **In-memory document store** — nothing persists long-term; a lease is
+  sensitive personal data and the MVP demo needs no accounts.
+- **unpdf / mammoth** — dependency-light PDF and DOCX text extraction.
+
+## Known limitations
+
+- In-memory store: documents vanish on redeploy/restart, and serverless
+  instances don't share state. Fine for the demo, not production.
+- Type detection is a single LLM call — it can misdetect; that's exactly why
+  confirmation is a user step (4/5-or-better on clean samples is the bar, not
+  perfection).
+- Comparison mode is same-type only — cross-type diffs would be nonsense.
+- Explanations are only as good as text extraction; scanned/image-only PDFs
+  without a text layer yield nothing useful.
+- No jurisdiction-specific correctness guarantees — the tool flags and
+  explains, it does not certify compliance with any specific law.
+
+## Deployment
+
+Vercel. Set `GEMINI_API_KEY` (and optionally `NEXT_PUBLIC_APP_NAME`) in the
+project's environment variables.

@@ -1,0 +1,23 @@
+TERMS OF SERVICE AND PRIVACY POLICY
+
+Welcome to Zephyra Notes, a note-taking application operated by Talvane Software LLP ("we", "us", or "our"). By creating an account or using the Service, you agree to these Terms and to the way we handle your information as described below.
+
+1. Acceptance of Terms. By using the Service you agree to be bound by these Terms. If you do not agree with them, you must stop using the Service and may close your account at any time.
+
+2. Accounts and Eligibility. You must be at least 16 years of age to create an account. You are responsible for keeping your password confidential and for all activity that occurs under your account.
+
+3. Information We Collect. We collect the email address and display name you provide at sign-up, the notes and attachments you store in the Service, and technical data such as device type, approximate location derived from your IP address, and usage logs recorded when you use the Service.
+
+4. How We Share Information. We share your information only with service providers that host our servers and process subscription payments under contracts requiring them to keep it confidential, and we may disclose it where we believe in good faith that disclosure is necessary to comply with applicable law or to protect the rights, property, or safety of our users.
+
+5. Your Rights and Choices. You may access, correct, or export your notes at any time from the account settings page. You may delete your account at any time, after which we will remove your personal information from our live systems within 30 days, except where retention is required by law.
+
+6. Security. Your notes are encrypted in transit and at rest. However, no method of transmission or storage is completely secure, and we cannot guarantee the absolute security of your information.
+
+7. Account Termination. We may suspend or terminate your account if you violate these Terms, use the Service for an unlawful purpose, or fail to pay any applicable subscription fee after two reminders. Where reasonably possible, we will give you 7 days' notice and an opportunity to remedy the breach before termination takes effect.
+
+8. Disclaimers and Limitation of Liability. The Service is provided "as is" without warranties of any kind. To the maximum extent permitted by law, our total liability arising out of or relating to the Service shall not exceed the subscription fees you paid us in the twelve months before the event giving rise to the claim.
+
+9. Changes to These Terms. We may modify these Terms from time to time and will notify registered users by email at least 14 days before the changes take effect. Your continued use of the Service after that date constitutes acceptance of the modified Terms.
+
+10. Dispute Resolution. Any dispute arising out of these Terms shall first be addressed by the parties in good faith for a period of 30 days. If the dispute remains unresolved, it shall be finally settled by binding arbitration seated in Bengaluru, and each party shall bear its own costs of arbitration.

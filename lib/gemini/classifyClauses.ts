@@ -1,15 +1,20 @@
-import type { Clause, ClauseCategory, RiskLevel } from "@/lib/types";
+import type { Clause, RiskLevel } from "@/lib/types";
 
 /*
  * Gemini classification layer (Phase 3). Takes the clauses the deterministic
  * parser already found and returns them annotated with category, riskLevel,
  * and a plain-language explanation. This is the ONLY place the LLM is
  * involved before Phase 5 — it never decides where a clause starts or ends
- * (constraint 3 in AGENTS.md), and the prompt forbids it from adding
+ * (constraint 3 in AGENTS2.md), and the prompt forbids it from adding
  * anything the clause's own words do not say (constraints 1 and 5).
  *
+ * The caller supplies the category taxonomy for the document's confirmed type
+ * (CATEGORY_MAP in /lib/documentTypes/config.ts) plus the type's display name,
+ * so the same code classifies any of the five supported document types — no
+ * category list or document-type wording is baked in here.
+ *
  * Calls are batched (default 25 clauses per request, sequential) to keep them
- * cheap and fast per AGENTS.md §7. Models: gemini-3.8-flash first, falling
+ * cheap and fast per AGENTS2.md §7. Models: gemini-3.8-flash first, falling
  * back to gemini-3.7-flash then gemini-3.6-flash on model-level failures
  * (unavailable, rate-limited, server errors). Key- and request-level
  * failures (400/401/403) fail identically on every model, so they fail fast
@@ -33,55 +38,63 @@ class GeminiHttpError extends Error {
   }
 }
 
-const CATEGORIES: readonly ClauseCategory[] = [
-  "rent",
-  "deposit",
-  "termination",
-  "maintenance",
-  "utilities",
-  "renewal",
-  "other",
-];
-
 const RISK_LEVELS: readonly RiskLevel[] = ["standard", "unusual", "risky"];
 
-const SYSTEM_PROMPT = `You review clauses from a residential lease agreement in India for a tenant who is reading it before signing. For each clause you are given, return one JSON object with its id, a category, a risk level, and a plain-language explanation.
+function buildSystemPrompt(
+  categories: readonly string[],
+  documentTypeName: string,
+): string {
+  return `You review clauses from a ${documentTypeName} for someone who is reading it before agreeing to it. For each clause you are given, return one JSON object with its id, a category, a risk level, and a plain-language explanation.
 
 Rules you must follow:
 - Base the explanation strictly on the wording of the clause provided. Never use general legal knowledge to add conditions, amounts, or consequences the clause does not state.
 - Never invent a risk the clause's own words do not support.
 - Write the explanation in simple language a non-lawyer can understand, in one or two sentences.
-- category must be one of: rent, deposit, termination, maintenance, utilities, renewal, other.
-- riskLevel must be "standard" when the clause reflects typical practice, "unusual" when it is noticeably one-sided or uncommon for a residential lease, or "risky" when it could cost the tenant money or rights (for example: forfeiting part of the deposit, waiving notice periods, open-ended charges).
+- category must be one of: ${categories.join(", ")}. Never invent a category outside this list.
+- riskLevel must be "standard" when the clause reflects typical practice, "unusual" when it is noticeably one-sided or uncommon for this kind of document, or "risky" when it could cost the reader money or rights (for example: forfeiting money already paid, giving up a right without compensation, open-ended charges).
 - Respond only with JSON matching the given schema.`;
+}
 
-const RESPONSE_SCHEMA = {
-  type: "ARRAY",
-  items: {
-    type: "OBJECT",
-    properties: {
-      id: { type: "STRING" },
-      category: { type: "STRING", enum: [...CATEGORIES] },
-      riskLevel: { type: "STRING", enum: [...RISK_LEVELS] },
-      explanation: { type: "STRING" },
+function buildResponseSchema(categories: readonly string[]) {
+  return {
+    type: "ARRAY",
+    items: {
+      type: "OBJECT",
+      properties: {
+        id: { type: "STRING" },
+        category: { type: "STRING", enum: [...categories] },
+        riskLevel: { type: "STRING", enum: [...RISK_LEVELS] },
+        explanation: { type: "STRING" },
+      },
+      required: ["id", "category", "riskLevel", "explanation"],
     },
-    required: ["id", "category", "riskLevel", "explanation"],
-  },
-} as const;
+  };
+}
 
 export interface ClassifyOptions {
+  /** Category taxonomy for the document's confirmed type (CATEGORY_MAP[type]). */
+  categories: string[];
+  /** Display name of the document type, e.g. "Non-disclosure agreement". */
+  documentTypeName: string;
   batchSize?: number;
+}
+
+/** Everything a batch request needs that is fixed for the whole call. */
+interface ClassificationContext {
+  categories: readonly string[];
+  systemPrompt: string;
+  responseSchema: ReturnType<typeof buildResponseSchema>;
 }
 
 interface GeminiClassification {
   id: string;
-  category: ClauseCategory;
+  category: string;
   riskLevel: RiskLevel;
   explanation: string;
 }
 
-function isCategory(value: unknown): value is ClauseCategory {
-  return CATEGORIES.includes(value as ClauseCategory);
+function isCategory(value: unknown, categories: readonly string[]): value is string {
+  return typeof value === "string" && categories.includes(value);
 }
 
 function isRiskLevel(value: unknown): value is RiskLevel {
@@ -92,9 +105,10 @@ async function classifyBatch(
   batch: Clause[],
   model: string,
   apiKey: string,
+  context: ClassificationContext,
 ): Promise<Map<string, GeminiClassification>> {
   const prompt =
-    "Classify the following lease clauses. Use the exact id given for each.\n\n" +
+    "Classify the following clauses. Use the exact id given for each.\n\n" +
     batch.map((clause) => `id: ${clause.id}\n${clause.text}`).join("\n\n");
 
   const response = await fetch(`${API_BASE}/${model}:generateContent`, {
@@ -104,12 +118,12 @@ async function classifyBatch(
       "x-goog-api-key": apiKey,
     },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      systemInstruction: { parts: [{ text: context.systemPrompt }] },
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
         temperature: 0.2,
         responseMimeType: "application/json",
-        responseSchema: RESPONSE_SCHEMA,
+        responseSchema: context.responseSchema,
       },
     }),
   });
@@ -151,7 +165,7 @@ async function classifyBatch(
       if (typeof entry !== "object" || entry === null) continue;
       const { id, category, riskLevel, explanation } = entry as Record<string, unknown>;
       if (typeof id !== "string" || typeof explanation !== "string") continue;
-      if (!isCategory(category) || !isRiskLevel(riskLevel)) continue;
+      if (!isCategory(category, context.categories) || !isRiskLevel(riskLevel)) continue;
       if (!results.has(id)) results.set(id, { id, category, riskLevel, explanation });
     }
   }
@@ -160,12 +174,17 @@ async function classifyBatch(
 
 export async function classifyClauses(
   clauses: Clause[],
-  options: ClassifyOptions = {},
+  options: ClassifyOptions,
 ): Promise<Clause[]> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
 
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  const context: ClassificationContext = {
+    categories: options.categories,
+    systemPrompt: buildSystemPrompt(options.categories, options.documentTypeName),
+    responseSchema: buildResponseSchema(options.categories),
+  };
   // An explicitly pinned model is an operator decision — use it alone.
   const chain: string[] = process.env.GEMINI_MODEL
     ? [process.env.GEMINI_MODEL]
@@ -185,7 +204,7 @@ export async function classifyClauses(
     let results: Map<string, GeminiClassification> | null = null;
     for (const model of order) {
       try {
-        results = await classifyBatch(batch, model, apiKey);
+        results = await classifyBatch(batch, model, apiKey, context);
         preferredModel = model;
         break;
       } catch (error) {

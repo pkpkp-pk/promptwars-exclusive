@@ -1,8 +1,8 @@
 import { Info } from "lucide-react";
 
 /*
- * Rendered on every screen that shows AI-generated content (constraint 4 in
- * AGENTS.md — not just the landing page). Keep the exact phrase.
+ * Rendered on every screen that shows AI-generated content (constraint 5 in
+ * AGENTS2.md — not just the landing page). Keep the exact phrase.
  */
 export default function Disclaimer() {
   return (
@@ -16,8 +16,8 @@ export default function Disclaimer() {
           This tool provides information, not legal advice.
         </strong>
         It reads the text you upload and points out what that text says. For
-        important decisions or legal disputes about your lease, always consult
-        a qualified legal professional.
+        important decisions or legal disputes about your document, always
+        consult a qualified legal professional.
       </div>
     </aside>
   );

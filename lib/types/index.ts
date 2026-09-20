@@ -1,22 +1,30 @@
-// Data models from AGENTS.md §6. These are the shared vocabulary for every
+// Data models from AGENTS2.md §6. These are the shared vocabulary for every
 // phase: the parser produces Clause[], the Gemini layer fills in category /
 // riskLevel / explanation, and the UI renders the results.
+//
+// Scope is five document types (AGENTS2.md §1). Categories are plain strings
+// constrained at runtime to the confirmed type's taxonomy in
+// /lib/documentTypes/config.ts — a union type here would only describe one
+// type's taxonomy, so the config map is the single source of truth.
+
+export type DocumentType =
+  | "lease"
+  | "freelance_contract"
+  | "tos_privacy_policy"
+  | "nda"
+  | "employment_offer";
 
 export interface Document {
   id: string;
   filename: string;
   rawText: string;
   uploadedAt: string;
+  /** Gemini's suggestion from /api/upload — shown to the user, never applied silently. */
+  suggestedType: DocumentType;
+  suggestedTypeConfidence: number; // 0-1
+  /** Set once the user confirms or overrides the suggestion. */
+  confirmedType?: DocumentType;
 }
-
-export type ClauseCategory =
-  | "rent"
-  | "deposit"
-  | "termination"
-  | "maintenance"
-  | "utilities"
-  | "renewal"
-  | "other";
 
 export type RiskLevel = "standard" | "unusual" | "risky";
 
@@ -25,7 +33,8 @@ export interface Clause {
   docId: string;
   text: string;
   order: number;
-  category?: ClauseCategory;
+  /** Must be a member of CATEGORY_MAP[confirmedType] for the clause's document. */
+  category?: string;
   riskLevel?: RiskLevel;
   explanation?: string;
 }
@@ -39,7 +48,7 @@ export interface QAExchange {
 }
 
 export interface ClauseDiff {
-  category: ClauseCategory;
+  category: string;
   docAText?: string;
   docBText?: string;
   materialDifference: string;
