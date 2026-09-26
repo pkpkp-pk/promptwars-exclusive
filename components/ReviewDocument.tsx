@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import ClauseCard from "./ClauseCard";
+import ChatPanel from "./ChatPanel";
 import Disclaimer from "./Disclaimer";
 import TypeConfirmBanner from "./TypeConfirmBanner";
-import type { Clause, DocumentType, RiskLevel } from "@/lib/types";
+import type { ChecklistResult, Clause, DocumentType, RiskLevel } from "@/lib/types";
 import { TYPE_LABELS } from "@/lib/documentTypes/config";
 
 /*
@@ -166,6 +167,9 @@ export default function ReviewDocument({
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [confirmedType, setConfirmedType] = useState<DocumentType | undefined>(undefined);
+  const [checklist, setChecklist] = useState<ChecklistResult | null>(null);
+  const [checklistBusy, setChecklistBusy] = useState(false);
+  const [checklistError, setChecklistError] = useState<string | null>(null);
   // Props are stable for a server-rendered page, so seeding from them keeps
   // the server and client markup identical before the sessionStorage check.
   const [suggestion, setSuggestion] = useState<TypeSuggestion | undefined>(
@@ -263,6 +267,27 @@ export default function ReviewDocument({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Phase 7: one call over the already-classified clauses — the route 409s
+  // if classification hasn't run, so the button only appears on "ready".
+  const loadChecklist = async () => {
+    setChecklistBusy(true);
+    setChecklistError(null);
+    try {
+      const response = await fetch("/api/checklist", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ docId }),
+      });
+      const body = (await response.json()) as ChecklistResult & { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Checklist failed.");
+      setChecklist(body);
+    } catch (err) {
+      setChecklistError(err instanceof Error ? err.message : "Checklist failed.");
+    } finally {
+      setChecklistBusy(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <header>
@@ -325,6 +350,55 @@ export default function ReviewDocument({
       {clauses && clauses.length > 0 && status !== "missing" ? (
         <>
           <RiskSummary clauses={clauses} />
+          {status === "ready" ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void loadChecklist()}
+                disabled={checklistBusy}
+                className="rounded-md bg-ink px-4 py-2 text-sm font-medium text-paper transition-opacity hover:opacity-85 disabled:opacity-50"
+              >
+                {checklistBusy ? "Building checklist…" : checklist ? "Refresh checklist" : "Get pre-signing checklist"}
+              </button>
+              <Link
+                href={`/compare?a=${docId}`}
+                className="rounded-md border border-rule px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-card"
+              >
+                Compare with another document
+              </Link>
+            </div>
+          ) : null}
+          {checklistError ? (
+            <p role="alert" className="text-sm text-risky">{checklistError}</p>
+          ) : null}
+          {checklist ? (
+            <section aria-label="Pre-signing checklist" className="flex flex-col gap-4 rounded-2xl border border-rule bg-card p-5">
+              <div>
+                <h2 className="font-serif text-xl font-medium text-ink">Red flags</h2>
+                {checklist.redFlags.length === 0 ? (
+                  <p className="mt-1 text-sm text-ink-muted">No unusual or risky clauses found.</p>
+                ) : (
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink">
+                    {checklist.redFlags.map((flag, index) => (
+                      <li key={index}>{flag}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <h2 className="font-serif text-xl font-medium text-ink">Questions for a lawyer</h2>
+                {checklist.questionsForLawyer.length === 0 ? (
+                  <p className="mt-1 text-sm text-ink-muted">Nothing ambiguous enough to need one.</p>
+                ) : (
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink">
+                    {checklist.questionsForLawyer.map((question, index) => (
+                      <li key={index}>{question}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </section>
+          ) : null}
           <div className="flex justify-end">
             <button
               type="button"
@@ -345,6 +419,9 @@ export default function ReviewDocument({
               />
             ))}
           </div>
+          {/* Phase 5 Q&A — only once classification succeeded, so the clause
+              list the answers cite is on screen. */}
+          {status === "ready" ? <ChatPanel docId={docId} clauses={clauses} /> : null}
         </>
       ) : null}
     </div>

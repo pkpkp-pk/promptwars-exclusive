@@ -22,10 +22,8 @@ const STEPS = [
     body: "Each complex legal clause gets a plain-language explanation, with unusual or heavily favored terms flagged immediately.",
   },
   {
-    // Grounded Q&A (Phase 5) isn't shipped — describe a capability that
-    // exists today rather than promising one that 404s.
-    title: "You Confirm the Type",
-    body: "We suggest what kind of document you uploaded; you confirm or correct it before analysis, so every category and flag comes from the right checklist.",
+    title: "Ask & Verify",
+    body: "Ask specific questions about payments, deadlines, or obligations and get answers that quote the exact clause directly.",
   },
 ];
 

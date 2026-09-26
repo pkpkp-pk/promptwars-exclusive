@@ -53,6 +53,31 @@ export interface GeminiJsonRequest {
 }
 
 /**
+ * Runs `fn` with backoff retries on transient failures. Fatal statuses throw
+ * immediately; non-transient HTTP statuses (e.g. 404 model gone) also throw
+ * immediately so a caller's model chain advances without burning retries on a
+ * permanent failure. Network-level throws (no status) are retried.
+ */
+export async function withTransientRetry<T>(
+  fn: () => Promise<T>,
+  retryDelays: readonly number[] = DEFAULT_RETRY_DELAYS_MS,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+    if (attempt > 0) await sleep(retryDelays[attempt - 1]!);
+    try {
+      return await fn();
+    } catch (error) {
+      if (error instanceof GeminiHttpError && !TRANSIENT_STATUSES.has(error.status)) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+/**
  * One structured-output call against one model, with backoff retries on
  * transient failures. Returns the model's concatenated text parts (already
  * JSON per responseMimeType); parsing and validation stay with the caller,
@@ -64,24 +89,7 @@ export async function generateJson(
 ): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
-
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
-    if (attempt > 0) await sleep(retryDelays[attempt - 1]!);
-    try {
-      return await generateOnce(request, apiKey);
-    } catch (error) {
-      // Fatal: retrying can't help. Transient (or a network-level throw with
-      // no status): back off and retry. Anything else (e.g. 404 model gone):
-      // fail immediately so the caller's chain advances without burning
-      // retries on a permanent failure.
-      if (error instanceof GeminiHttpError && !TRANSIENT_STATUSES.has(error.status)) {
-        throw error;
-      }
-      lastError = error;
-    }
-  }
-  throw lastError;
+  return withTransientRetry(() => generateOnce(request, apiKey), retryDelays);
 }
 
 async function generateOnce(request: GeminiJsonRequest, apiKey: string): Promise<string> {
