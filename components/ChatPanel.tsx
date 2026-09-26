@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { MessageCircleQuestion, Send } from "lucide-react";
 import type { Clause, QAExchange } from "@/lib/types";
 
@@ -60,7 +60,11 @@ export default function ChatPanel({
     }
   };
 
-  const clauseById = new Map(clauses.map((clause) => [clause.id, clause]));
+  // Rebuilt only when the clause list changes, not per keystroke.
+  const clauseById = useMemo(
+    () => new Map(clauses.map((clause) => [clause.id, clause])),
+    [clauses],
+  );
 
   return (
     <section aria-label="Ask questions about this document" className="flex flex-col gap-4 rounded-2xl border border-rule bg-card p-5">

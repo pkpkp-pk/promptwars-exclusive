@@ -1,9 +1,10 @@
 import { embedAll } from "@/lib/embeddings/embed";
-import { cosineSimilarity } from "@/lib/embeddings/similarity";
+import { cosineSimilarityNormed, l2Norm } from "@/lib/embeddings/similarity";
 import { answerQuestion } from "@/lib/gemini/answerQuestion";
 import { userFacingGeminiError } from "@/lib/gemini/client";
-import { getClauses, getDocument } from "@/lib/store";
-import type { QAExchange } from "@/lib/types";
+import { clientIp, rateLimit } from "@/lib/rateLimit";
+import { getClauses, getDocument, getEmbeddings, setEmbeddings } from "@/lib/store";
+import type { Clause, QAExchange } from "@/lib/types";
 
 /*
  * POST /api/ask — Phase 5, AGENTS2.md §7. Request: { docId, question }.
@@ -17,6 +18,27 @@ import type { QAExchange } from "@/lib/types";
 const TOP_K = 5;
 const GROUNDED_THRESHOLD = 0.45;
 const MAX_QUESTION_CHARS = 1000;
+
+/** Per-IP chat budget: each grounded question can spend a generation call. */
+const ASK_LIMIT = 60;
+const ASK_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Clause texts are immutable after upload, so their embeddings are computed
+ * once per document and cached in the store — a chat question costs one
+ * embedding (its own), not N+1 for the whole corpus.
+ */
+async function ensureEmbeddings(
+  docId: string,
+  clauses: Clause[],
+): Promise<{ vectors: number[][]; norms: number[] }> {
+  const cached = getEmbeddings(docId);
+  if (cached) return cached;
+  const vectors = await embedAll(clauses.map((clause) => clause.text));
+  const norms = vectors.map(l2Norm);
+  setEmbeddings(docId, vectors, norms);
+  return { vectors, norms };
+}
 
 const NOT_ADDRESSED_ANSWER =
   "This document doesn’t address that question. For anything it doesn’t cover, consult a qualified legal professional before you sign.";
@@ -57,6 +79,13 @@ export async function POST(request: Request): Promise<Response> {
     return errorResponse(422, "That document has no clauses to search.");
   }
 
+  if (!rateLimit("ask", clientIp(request), ASK_LIMIT, ASK_WINDOW_MS)) {
+    return errorResponse(
+      429,
+      "Too many questions from your network — wait a while and try again.",
+    );
+  }
+
   if (!process.env.GEMINI_API_KEY) {
     return errorResponse(
       503,
@@ -65,16 +94,22 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    // Question first, then the clauses — one batched embedding call.
-    const [questionVector, ...clauseVectors] = await embedAll([
-      trimmedQuestion,
-      ...clauses.map((clause) => clause.text),
-    ]);
+    const [{ vectors: clauseVectors, norms: clauseNorms }, [questionVector]] =
+      await Promise.all([
+        ensureEmbeddings(docId, clauses),
+        embedAll([trimmedQuestion]),
+      ]);
+    const questionNorm = l2Norm(questionVector!);
 
     const ranked = clauses
       .map((clause, index) => ({
         clause,
-        score: cosineSimilarity(questionVector!, clauseVectors[index]!),
+        score: cosineSimilarityNormed(
+          questionVector!,
+          clauseVectors[index]!,
+          questionNorm,
+          clauseNorms[index]!,
+        ),
       }))
       .sort((a, b) => b.score - a.score);
 

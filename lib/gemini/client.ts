@@ -141,15 +141,18 @@ async function generateOnce(request: GeminiJsonRequest, apiKey: string): Promise
  * while 503 is a transient demand spike worth an immediate retry. Lumping
  * both under "couldn't be reached" told users to retry a quota error for
  * hours, so the wording is split here once for every route.
+ *
+ * The upstream API's own message stays in server logs only: it can name
+ * internal models/config and echo request content, none of which belongs in
+ * a user-facing body.
  */
 export function userFacingGeminiError(error: unknown): string {
   const status = error instanceof GeminiHttpError ? error.status : undefined;
-  const detail = error instanceof Error ? error.message : "unknown error";
   if (status === 429) {
-    return `The analysis service's usage limit is reached for now (${detail}). This usually resets within a day on the free tier — try again later.`;
+    return "The analysis service's usage limit is reached for now. This usually resets within a day on the free tier — try again later.";
   }
   if (status !== undefined && TRANSIENT_STATUSES.has(status)) {
-    return `The analysis service is temporarily busy (${detail}). Please try again in a moment.`;
+    return "The analysis service is temporarily busy. Please try again in a moment.";
   }
-  return `The analysis service couldn’t be reached (${detail}). Please try again.`;
+  return "The analysis service couldn’t be reached. Please try again.";
 }

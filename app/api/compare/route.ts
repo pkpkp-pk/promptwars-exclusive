@@ -1,9 +1,17 @@
 import { embedAll } from "@/lib/embeddings/embed";
-import { cosineSimilarity } from "@/lib/embeddings/similarity";
+import { cosineSimilarityNormed, l2Norm } from "@/lib/embeddings/similarity";
 import { compareClauses, type AlignedPair } from "@/lib/gemini/compareClauses";
 import { userFacingGeminiError } from "@/lib/gemini/client";
 import { TYPE_LABELS } from "@/lib/documentTypes/config";
-import { getClauses, getDocument } from "@/lib/store";
+import { clientIp, rateLimit } from "@/lib/rateLimit";
+import {
+  getClauses,
+  getComparison,
+  getDocument,
+  getEmbeddings,
+  setComparison,
+  setEmbeddings,
+} from "@/lib/store";
 import type { Clause, ClauseDiff } from "@/lib/types";
 
 /*
@@ -17,6 +25,22 @@ import type { Clause, ClauseDiff } from "@/lib/types";
 /** Two clauses in the same category pair up above this cosine score. */
 const ALIGN_THRESHOLD = 0.5;
 
+const COMPARE_LIMIT = 20;
+const COMPARE_WINDOW_MS = 60 * 60 * 1000;
+
+/** Clause embeddings are per-document and cached — see /api/ask. */
+async function ensureEmbeddings(
+  docId: string,
+  clauses: Clause[],
+): Promise<{ vectors: number[][]; norms: number[] }> {
+  const cached = getEmbeddings(docId);
+  if (cached) return cached;
+  const vectors = await embedAll(clauses.map((clause) => clause.text));
+  const norms = vectors.map(l2Norm);
+  setEmbeddings(docId, vectors, norms);
+  return { vectors, norms };
+}
+
 function errorResponse(status: number, message: string): Response {
   return Response.json({ error: message }, { status });
 }
@@ -27,6 +51,8 @@ function alignByCategory(
   clausesB: Clause[],
   vectorsA: number[][],
   vectorsB: number[][],
+  normsA: number[],
+  normsB: number[],
 ): AlignedPair[] {
   const pairs: AlignedPair[] = [];
   const usedB = new Set<number>();
@@ -36,7 +62,12 @@ function alignByCategory(
     let bestScore = ALIGN_THRESHOLD;
     for (let j = 0; j < clausesB.length; j++) {
       if (usedB.has(j)) continue;
-      const score = cosineSimilarity(vectorsA[i]!, vectorsB[j]!);
+      const score = cosineSimilarityNormed(
+        vectorsA[i]!,
+        vectorsB[j]!,
+        normsA[i]!,
+        normsB[j]!,
+      );
       if (score >= bestScore) {
         bestScore = score;
         bestJ = j;
@@ -107,6 +138,19 @@ export async function POST(request: Request): Promise<Response> {
     return errorResponse(422, "One of those documents has no clauses to compare.");
   }
 
+  // A repeat compare of the same ordered pair is deterministic enough
+  // (fixed texts, temperature 0.2) — serve the cached diff instead of
+  // re-paying the alignment embeddings and the generation call.
+  const cachedDiffs = getComparison(docAId, docBId);
+  if (cachedDiffs) return Response.json({ diffs: cachedDiffs });
+
+  if (!rateLimit("compare", clientIp(request), COMPARE_LIMIT, COMPARE_WINDOW_MS)) {
+    return errorResponse(
+      429,
+      "Too many comparisons from your network — wait a while and try again.",
+    );
+  }
+
   if (!process.env.GEMINI_API_KEY) {
     return errorResponse(
       503,
@@ -115,13 +159,13 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    // One batched embedding call for both documents.
-    const vectors = await embedAll([
-      ...clausesA.map((clause) => clause.text),
-      ...clausesB.map((clause) => clause.text),
-    ]);
-    const vectorsA = vectors.slice(0, clausesA.length);
-    const vectorsB = vectors.slice(clausesA.length);
+    // Per-document embedding caches — usually both hit after the first ask
+    // or compare, so this costs zero embedding calls on repeats.
+    const [{ vectors: vectorsA, norms: normsA }, { vectors: vectorsB, norms: normsB }] =
+      await Promise.all([
+        ensureEmbeddings(docAId, clausesA),
+        ensureEmbeddings(docBId, clausesB),
+      ]);
 
     // Align within each category; categories present in neither list produce
     // no pairs at all.
@@ -135,22 +179,27 @@ export async function POST(request: Request): Promise<Response> {
       const inB: Clause[] = [];
       const va: number[][] = [];
       const vb: number[][] = [];
+      const na: number[] = [];
+      const nb: number[] = [];
       clausesA.forEach((clause, i) => {
         if ((clause.category ?? "other") === category) {
           inA.push(clause);
           va.push(vectorsA[i]!);
+          na.push(normsA[i]!);
         }
       });
       clausesB.forEach((clause, j) => {
         if ((clause.category ?? "other") === category) {
           inB.push(clause);
           vb.push(vectorsB[j]!);
+          nb.push(normsB[j]!);
         }
       });
-      pairs.push(...alignByCategory(inA, inB, va, vb));
+      pairs.push(...alignByCategory(inA, inB, va, vb, na, nb));
     }
 
     const diffs: ClauseDiff[] = await compareClauses(pairs, TYPE_LABELS[docA.confirmedType]);
+    setComparison(docAId, docBId, diffs);
     return Response.json({ diffs });
   } catch (error) {
     const detail = error instanceof Error ? error.message : "unknown error";

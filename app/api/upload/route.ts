@@ -5,6 +5,7 @@ import { detectType, type TypeSuggestion } from "@/lib/documentTypes/detectType"
 import { userFacingGeminiError } from "@/lib/gemini/client";
 import { TYPE_LABELS } from "@/lib/documentTypes/config";
 import { segmentClauses } from "@/lib/parser/segmentClauses";
+import { clientIp, rateLimit } from "@/lib/rateLimit";
 import { saveDocument } from "@/lib/store";
 
 /*
@@ -20,6 +21,16 @@ import { saveDocument } from "@/lib/store";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+/*
+ * A 10 MB *compressed* DOCX/PDF container can inflate to far more in memory
+ * (jszip has no decompressed-size limit), and the extracted text is what the
+ * store pins per document. Reject documents past this extracted-text cap.
+ */
+const MAX_EXTRACTED_CHARS = 5 * 1024 * 1024;
+
+const UPLOAD_LIMIT = 20;
+const UPLOAD_WINDOW_MS = 60 * 60 * 1000;
+
 // Built from TYPE_LABELS so the config stays the single source of truth for
 // which types exist and what the user calls them.
 const SUPPORTED_TYPES = Object.values(TYPE_LABELS).join(", ");
@@ -29,6 +40,23 @@ function errorResponse(status: number, message: string): Response {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // Reject oversize bodies before formData() buffers the whole multipart
+  // body in memory — the per-file check below only runs after parsing.
+  const declaredLength = Number(request.headers.get("content-length") ?? 0);
+  if (declaredLength > MAX_UPLOAD_BYTES * 2) {
+    return errorResponse(
+      413,
+      "That file is larger than 10 MB. Try a smaller scan or a text-based export.",
+    );
+  }
+
+  if (!rateLimit("upload", clientIp(request), UPLOAD_LIMIT, UPLOAD_WINDOW_MS)) {
+    return errorResponse(
+      429,
+      "Too many uploads from your network — wait a while and try again.",
+    );
+  }
+
   let formData: FormData;
   try {
     formData = await request.formData();
@@ -73,6 +101,13 @@ export async function POST(request: Request): Promise<Response> {
     return errorResponse(
       422,
       "We couldn’t extract text from that file. It may be corrupted or password-protected.",
+    );
+  }
+
+  if (rawText.length > MAX_EXTRACTED_CHARS) {
+    return errorResponse(
+      413,
+      "That document's extracted text is too large to analyze. Try a shorter document or a text-based export.",
     );
   }
 

@@ -1,6 +1,7 @@
 import { generateChecklist } from "@/lib/gemini/generateChecklist";
 import { userFacingGeminiError } from "@/lib/gemini/client";
 import { TYPE_LABELS } from "@/lib/documentTypes/config";
+import { clientIp, rateLimit } from "@/lib/rateLimit";
 import { getClauses, getDocument } from "@/lib/store";
 
 /*
@@ -9,6 +10,9 @@ import { getClauses, getDocument } from "@/lib/store";
  * list in one Gemini call — classification must have run first (409
  * otherwise), so this route never re-reads the raw document.
  */
+
+const CHECKLIST_LIMIT = 30;
+const CHECKLIST_WINDOW_MS = 60 * 60 * 1000;
 
 function errorResponse(status: number, message: string): Response {
   return Response.json({ error: message }, { status });
@@ -44,6 +48,13 @@ export async function POST(request: Request): Promise<Response> {
     return errorResponse(
       409,
       "Run the clause analysis first — the checklist is built from the classified clauses.",
+    );
+  }
+
+  if (!rateLimit("checklist", clientIp(request), CHECKLIST_LIMIT, CHECKLIST_WINDOW_MS)) {
+    return errorResponse(
+      429,
+      "Too many checklist runs from your network — wait a while and try again.",
     );
   }
 

@@ -1,6 +1,7 @@
 import { classifyClauses } from "@/lib/gemini/classifyClauses";
 import { userFacingGeminiError } from "@/lib/gemini/client";
 import { CATEGORY_MAP, TYPE_LABELS } from "@/lib/documentTypes/config";
+import { clientIp, rateLimit } from "@/lib/rateLimit";
 import type { DocumentType } from "@/lib/types";
 import { getClauses, getDocument, setConfirmedType, updateClauses } from "@/lib/store";
 
@@ -19,6 +20,10 @@ import { getClauses, getDocument, setConfirmedType, updateClauses } from "@/lib/
 // CATEGORY_MAP's keys are the source of truth for which document types
 // exist — a separate list here could drift from the taxonomies in config.
 const DOCUMENT_TYPES: readonly string[] = Object.keys(CATEGORY_MAP);
+
+/** Classification spends ceil(N/25) Gemini calls — cap repeats per IP. */
+const CLASSIFY_LIMIT = 30;
+const CLASSIFY_WINDOW_MS = 60 * 60 * 1000;
 
 function isDocumentType(value: unknown): value is DocumentType {
   return typeof value === "string" && DOCUMENT_TYPES.includes(value);
@@ -53,10 +58,33 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  if (!getDocument(docId)) {
+  const document = getDocument(docId);
+  if (!document) {
     return errorResponse(
       404,
       "We couldn’t find that document. It may have expired — upload your document again.",
+    );
+  }
+
+  const clauses = getClauses(docId);
+  if (!clauses || clauses.length === 0) {
+    return errorResponse(422, "That document has no clauses to analyze.");
+  }
+
+  // Idempotency: re-confirming the same type on an already-classified
+  // document (new tab, lost sessionStorage cache) returns the stored result
+  // instead of re-paying the full classification.
+  if (
+    document.confirmedType === confirmedType &&
+    clauses.every((clause) => clause.riskLevel !== undefined)
+  ) {
+    return Response.json({ clauses });
+  }
+
+  if (!rateLimit("classify", clientIp(request), CLASSIFY_LIMIT, CLASSIFY_WINDOW_MS)) {
+    return errorResponse(
+      429,
+      "Too many analysis runs from your network — wait a while and try again.",
     );
   }
 
@@ -65,11 +93,6 @@ export async function POST(request: Request): Promise<Response> {
       503,
       "Analysis isn’t configured on this deployment (GEMINI_API_KEY is missing).",
     );
-  }
-
-  const clauses = getClauses(docId);
-  if (!clauses || clauses.length === 0) {
-    return errorResponse(422, "That document has no clauses to analyze.");
   }
 
   try {

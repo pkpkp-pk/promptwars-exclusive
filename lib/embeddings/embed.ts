@@ -64,7 +64,13 @@ async function embedBatchWithModel(
   }, retryDelays);
 }
 
-/** Embeds every text in one batched call, trying each model in the chain. */
+/*
+ * Gemini caps batchEmbedContents at 100 entries per request — a larger
+ * document would fail permanently with a fatal 400. Chunk above that.
+ */
+const MAX_BATCH_TEXTS = 100;
+
+/** Embeds every text, chunking into ≤100-entry batched calls. */
 export async function embedAll(
   texts: string[],
   options?: { retryDelays?: number[] },
@@ -73,10 +79,21 @@ export async function embedAll(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
 
+  const chunks: string[][] = [];
+  for (let start = 0; start < texts.length; start += MAX_BATCH_TEXTS) {
+    chunks.push(texts.slice(start, start + MAX_BATCH_TEXTS));
+  }
+
   let lastError: unknown;
   for (const model of embedChain()) {
     try {
-      return await embedBatchWithModel(texts, model, apiKey, options?.retryDelays);
+      const results: number[][] = [];
+      for (const chunk of chunks) {
+        results.push(
+          ...(await embedBatchWithModel(chunk, model, apiKey, options?.retryDelays)),
+        );
+      }
+      return results;
     } catch (error) {
       if (
         error instanceof GeminiHttpError &&
