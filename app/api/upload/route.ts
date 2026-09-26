@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { extractText, getDocumentProxy } from "unpdf";
 import mammoth from "mammoth";
 import { detectType, type TypeSuggestion } from "@/lib/documentTypes/detectType";
+import { userFacingGeminiError } from "@/lib/gemini/client";
 import { TYPE_LABELS } from "@/lib/documentTypes/config";
 import { segmentClauses } from "@/lib/parser/segmentClauses";
 import { saveDocument } from "@/lib/store";
@@ -94,21 +95,19 @@ export async function POST(request: Request): Promise<Response> {
   const docId = randomUUID();
   const clauses = segmentClauses(rawText, docId);
 
-  let suggestion: TypeSuggestion;
+  let suggestion: TypeSuggestion | undefined;
   try {
     suggestion = await detectType(rawText);
   } catch (error) {
-    // Same diagnosability contract as /api/classify: the upstream reason
-    // (status + API message) goes to the logs and the response body.
+    // Degrade, don't fail: the deterministic work (extraction, segmentation)
+    // already succeeded, and the review UI has a manual type picker for exactly
+    // this case. A transient Gemini outage must not make ingestion unusable.
+    // The reason still goes to the logs for diagnosis.
     const detail = error instanceof Error ? error.message : "unknown error";
-    console.error("[/api/upload] Gemini type detection failed:", detail);
-    return errorResponse(
-      502,
-      `The analysis service couldn’t be reached (${detail}). Please try again.`,
-    );
+    console.error("[/api/upload] Gemini type detection failed:", detail, "|", userFacingGeminiError(error));
   }
 
-  if (suggestion.suggestedType === "none_of_these") {
+  if (suggestion?.suggestedType === "none_of_these") {
     return errorResponse(
       422,
       `We couldn’t tell what kind of document this is. This tool supports five document types: ${SUPPORTED_TYPES}. If yours is one of them, try uploading a cleaner text-based copy.`,
@@ -121,8 +120,12 @@ export async function POST(request: Request): Promise<Response> {
       filename: file.name,
       rawText,
       uploadedAt: new Date().toISOString(),
-      suggestedType: suggestion.suggestedType,
-      suggestedTypeConfidence: suggestion.confidence,
+      ...(suggestion
+        ? {
+            suggestedType: suggestion.suggestedType,
+            suggestedTypeConfidence: suggestion.confidence,
+          }
+        : {}),
     },
     clauses,
   );
@@ -130,8 +133,12 @@ export async function POST(request: Request): Promise<Response> {
   return Response.json({
     docId,
     clauseCount: clauses.length,
-    suggestedType: suggestion.suggestedType,
-    suggestedTypeConfidence: suggestion.confidence,
+    ...(suggestion
+      ? {
+          suggestedType: suggestion.suggestedType,
+          suggestedTypeConfidence: suggestion.confidence,
+        }
+      : {}),
   });
 }
 

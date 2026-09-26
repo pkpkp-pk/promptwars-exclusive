@@ -199,8 +199,44 @@ describe("classifyClauses", () => {
   it("throws the last error when every model in the chain is rate-limited", async () => {
     fetchMock.mockImplementation(async () => new Response("{}", { status: 429 }));
 
-    await expect(classifyClauses(threeClauses(), leaseOptions)).rejects.toThrow(/status 429/);
+    // retryDelays: [] disables per-model retries — pure chain walk, 3 calls.
+    await expect(
+      classifyClauses(threeClauses(), { ...leaseOptions, retryDelays: [] }),
+    ).rejects.toThrow(/status 429/);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a transient 503 on the same model before falling back", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("{}", { status: 503 }))
+      .mockResolvedValueOnce(
+        geminiResponse([
+          { id: "d1-c0", category: "rent", riskLevel: "standard", explanation: "Sets the rent." },
+        ]),
+      );
+
+    const classified = await classifyClauses(threeClauses(), {
+      ...leaseOptions,
+      retryDelays: [0, 0],
+    });
+
+    // Same model absorbs the spike; the chain never advances.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url1] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const [url2] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(url1).toContain("gemini-3.8-flash");
+    expect(url2).toContain("gemini-3.8-flash");
+    expect(classified[0]?.category).toBe("rent");
+  });
+
+  it("advances the chain only after a model's retries are exhausted", async () => {
+    fetchMock.mockImplementation(async () => new Response("{}", { status: 429 }));
+
+    await expect(
+      classifyClauses(threeClauses(), { ...leaseOptions, retryDelays: [0, 0] }),
+    ).rejects.toThrow(/status 429/);
+    // 3 models × (1 initial + 2 retries).
+    expect(fetchMock).toHaveBeenCalledTimes(9);
   });
 
   it("uses gemini-3.8-flash as the primary model", async () => {
@@ -241,7 +277,8 @@ describe("classifyClauses", () => {
         ]),
       );
 
-    const classified = await classifyClauses(threeClauses(), leaseOptions);
+    // retryDelays: [] — a 429 walks straight to the next model, as before.
+    const classified = await classifyClauses(threeClauses(), { ...leaseOptions, retryDelays: [] });
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const [url3] = fetchMock.mock.calls[2] as unknown as [string, RequestInit];

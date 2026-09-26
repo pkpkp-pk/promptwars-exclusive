@@ -1,4 +1,5 @@
 import { classifyClauses } from "@/lib/gemini/classifyClauses";
+import { userFacingGeminiError } from "@/lib/gemini/client";
 import { CATEGORY_MAP, TYPE_LABELS } from "@/lib/documentTypes/config";
 import type { DocumentType } from "@/lib/types";
 import { getClauses, getDocument, setConfirmedType, updateClauses } from "@/lib/store";
@@ -99,12 +100,10 @@ export async function POST(request: Request): Promise<Response> {
   } catch (error) {
     // Surface the upstream reason (status + API message) in the logs and the
     // response so a misconfigured key or quota issue is diagnosable in
-    // production instead of presenting as an opaque 502.
+    // production instead of presenting as an opaque 502. 429 (quota) and 503
+    // (demand spike) get distinct wording — userFacingGeminiError owns that.
     const detail = error instanceof Error ? error.message : "unknown error";
     console.error("[/api/classify] Gemini call failed:", detail);
-    return errorResponse(
-      502,
-      `The analysis service couldn’t be reached (${detail}). Please try again.`,
-    );
+    return errorResponse(502, userFacingGeminiError(error));
   }
 }

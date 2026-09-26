@@ -61,12 +61,71 @@ function mergeCapsHeadings(paragraphs: string[]): string[] {
   return merged;
 }
 
+/*
+ * Real-world post-pass bounds (found by testing public deed templates):
+ * blank-fill deeds (e.g. state govt rent-deed forms) shatter into 1-40-char
+ * fragments on the paragraph fallback — merge anything under
+ * MIN_CLAUSE_CHARS into its neighbor. Dense indenture deeds produce the
+ * opposite failure: a handful of multi-thousand-char blobs that citations
+ * can't point into — split anything over MAX_CLAUSE_CHARS on line
+ * boundaries. Both passes are pure text surgery; no content is dropped.
+ */
+const MIN_CLAUSE_CHARS = 40;
+const MAX_CLAUSE_CHARS = 3000;
+
+/** Split an oversized chunk at line boundaries, packing lines up to the cap. */
+function splitLarge(chunk: string): string[] {
+  if (chunk.length <= MAX_CLAUSE_CHARS) return [chunk];
+  const parts: string[] = [];
+  let current = "";
+  for (const line of chunk.split("\n")) {
+    if (current.length + line.length + 1 > MAX_CLAUSE_CHARS && current !== "") {
+      parts.push(current);
+      current = line;
+    } else {
+      current = current === "" ? line : `${current}\n${line}`;
+    }
+  }
+  if (current !== "") parts.push(current);
+  // Pathological single line over the cap: hard-slice rather than emit a blob.
+  return parts.flatMap((part) => {
+    if (part.length <= MAX_CLAUSE_CHARS) return [part];
+    const slices: string[] = [];
+    for (let i = 0; i < part.length; i += MAX_CLAUSE_CHARS) {
+      slices.push(part.slice(i, i + MAX_CLAUSE_CHARS));
+    }
+    return slices;
+  });
+}
+
+/** Fold undersized fragments into the previous chunk (or the next, for a leading fragment). */
+function mergeSmall(chunks: string[]): string[] {
+  const merged: string[] = [];
+  for (const chunk of chunks) {
+    if (chunk.trim().length < MIN_CLAUSE_CHARS && merged.length > 0) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]}\n${chunk}`;
+    } else {
+      merged.push(chunk);
+    }
+  }
+  // Leading run of fragments merges forward into the first real clause.
+  while (merged.length > 1 && merged[0]!.trim().length < MIN_CLAUSE_CHARS) {
+    merged[1] = `${merged[0]}\n${merged[1]}`;
+    merged.shift();
+  }
+  return merged;
+}
+
 export function segmentClauses(rawText: string, docId: string): Clause[] {
   const numbered = chunkByNumberedMarkers(rawText);
+  // mergeSmall only applies to the paragraph fallback: fragmentary output is
+  // a fallback failure mode (blank-fill forms), while a numbered document's
+  // short clauses are real clauses that must not be merged away. splitLarge
+  // runs on both paths — a numbered clause can still be a multi-page blob.
   const source =
     numbered.length > 0
-      ? numbered
-      : mergeCapsHeadings(chunkByParagraphs(rawText));
+      ? numbered.flatMap(splitLarge)
+      : mergeSmall(mergeCapsHeadings(chunkByParagraphs(rawText)).flatMap(splitLarge));
 
   return source
     .map((chunk) => chunk.trim())

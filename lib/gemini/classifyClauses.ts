@@ -1,4 +1,5 @@
 import type { Clause, RiskLevel } from "@/lib/types";
+import { FATAL_STATUSES, GeminiHttpError, generateJson, modelChain } from "./client";
 
 /*
  * Gemini classification layer (Phase 3). Takes the clauses the deterministic
@@ -14,29 +15,11 @@ import type { Clause, RiskLevel } from "@/lib/types";
  * category list or document-type wording is baked in here.
  *
  * Calls are batched (default 25 clauses per request, sequential) to keep them
- * cheap and fast per AGENTS2.md §7. Models: gemini-3.8-flash first, falling
- * back to gemini-3.7-flash then gemini-3.6-flash on model-level failures
- * (unavailable, rate-limited, server errors). Key- and request-level
- * failures (400/401/403) fail identically on every model, so they fail fast
- * with the full diagnostic instead of burning the chain. Setting GEMINI_MODEL
- * pins a single model and disables the chain.
+ * cheap and fast per AGENTS2.md §7. Model chain, transient retry, and the
+ * fatal-status short-circuit live in ./client.
  */
 
-const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const MODEL_CHAIN = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"];
 export const DEFAULT_BATCH_SIZE = 25;
-
-const FATAL_STATUSES = new Set([400, 401, 403]);
-
-class GeminiHttpError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = "GeminiHttpError";
-  }
-}
 
 const RISK_LEVELS: readonly RiskLevel[] = ["standard", "unusual", "risky"];
 
@@ -77,6 +60,8 @@ export interface ClassifyOptions {
   /** Display name of the document type, e.g. "Non-disclosure agreement". */
   documentTypeName: string;
   batchSize?: number;
+  /** Test hook: per-model backoff delays for transient failures (default in ./client). */
+  retryDelays?: number[];
 }
 
 /** Everything a batch request needs that is fixed for the whole call. */
@@ -104,53 +89,22 @@ function isRiskLevel(value: unknown): value is RiskLevel {
 async function classifyBatch(
   batch: Clause[],
   model: string,
-  apiKey: string,
   context: ClassificationContext,
+  retryDelays?: number[],
 ): Promise<Map<string, GeminiClassification>> {
   const prompt =
     "Classify the following clauses. Use the exact id given for each.\n\n" +
     batch.map((clause) => `id: ${clause.id}\n${clause.text}`).join("\n\n");
 
-  const response = await fetch(`${API_BASE}/${model}:generateContent`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-goog-api-key": apiKey,
+  const text = await generateJson(
+    {
+      model,
+      systemPrompt: context.systemPrompt,
+      prompt,
+      responseSchema: context.responseSchema,
     },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: context.systemPrompt }] },
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.2,
-        responseMimeType: "application/json",
-        responseSchema: context.responseSchema,
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    // Keep the API's own reason (e.g. "API key not valid") — it's what makes
-    // a production failure diagnosable from the route's logs and error body.
-    let detail = "";
-    try {
-      const text = await response.text();
-      const parsed = JSON.parse(text) as { error?: { message?: string } };
-      if (parsed.error?.message) detail = `: ${parsed.error.message.slice(0, 200)}`;
-    } catch {
-      // Non-JSON error body — the status alone is still thrown.
-    }
-    throw new GeminiHttpError(
-      response.status,
-      `Gemini API request failed with status ${response.status}${detail}`,
-    );
-  }
-
-  const data = (await response.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
-  };
-  const text = (data.candidates?.[0]?.content?.parts ?? [])
-    .map((part) => part.text ?? "")
-    .join("");
+    retryDelays,
+  );
 
   let parsed: unknown;
   try {
@@ -176,8 +130,7 @@ export async function classifyClauses(
   clauses: Clause[],
   options: ClassifyOptions,
 ): Promise<Clause[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
 
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const context: ClassificationContext = {
@@ -185,10 +138,7 @@ export async function classifyClauses(
     systemPrompt: buildSystemPrompt(options.categories, options.documentTypeName),
     responseSchema: buildResponseSchema(options.categories),
   };
-  // An explicitly pinned model is an operator decision — use it alone.
-  const chain: string[] = process.env.GEMINI_MODEL
-    ? [process.env.GEMINI_MODEL]
-    : MODEL_CHAIN;
+  const chain = modelChain();
   const byId = new Map<string, GeminiClassification>();
 
   // Once a model works, try it first for the remaining batches.
@@ -204,7 +154,7 @@ export async function classifyClauses(
     let results: Map<string, GeminiClassification> | null = null;
     for (const model of order) {
       try {
-        results = await classifyBatch(batch, model, apiKey, context);
+        results = await classifyBatch(batch, model, context, options.retryDelays);
         preferredModel = model;
         break;
       } catch (error) {

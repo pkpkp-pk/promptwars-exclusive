@@ -121,4 +121,33 @@ describe("segmentClauses", () => {
     const clauses = segmentClauses("\n\n   \n1. Only clause.\n\n", "doc-3");
     expect(clauses.map((clause) => clause.text)).toEqual(["1. Only clause."]);
   });
+
+  /*
+   * Real public templates (AGENTS2.md §2 constraint 6 — publicly available,
+   * not fabricated): a dense SBI lease deed and a blank-fill Haryana govt
+   * rent deed. These drove the merge/split post-pass: the SBI deed collapsed
+   * into 4 multi-thousand-char blobs, the Haryana deed shattered into 92
+   * fragments (smallest 1 char).
+   */
+
+  it("splits a dense indenture deed past the paragraph granularity", () => {
+    const clauses = segmentClauses(fixture("real-lease-sbi-deed.txt"), "doc-20");
+    expect(clauses.length).toBeGreaterThan(4);
+    for (const clause of clauses) {
+      expect(clause.text.length).toBeLessThanOrEqual(3000);
+    }
+    // No content lost.
+    const total = clauses.reduce((sum, clause) => sum + clause.text.length, 0);
+    expect(total).toBeGreaterThan(15000);
+  });
+
+  it("merges form-fill deed fragments into real clauses", () => {
+    const clauses = segmentClauses(fixture("real-lease-haryana-rent-deed.txt"), "doc-21");
+    // Was 92 fragments; the merge pass must land at a sane clause count.
+    expect(clauses.length).toBeLessThan(30);
+    expect(clauses.length).toBeGreaterThan(2);
+    for (const clause of clauses) {
+      expect(clause.text.length).toBeGreaterThan(20);
+    }
+  });
 });

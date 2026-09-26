@@ -230,7 +230,8 @@ describe("detectType", () => {
         geminiResponse({ documentType: "nda", confidence: 0.9 }),
       );
 
-    const result = await detectType(SYNTHETIC_NDA);
+    // retryDelays: [] — a 429 walks straight to the next model, as before.
+    const result = await detectType(SYNTHETIC_NDA, { retryDelays: [] });
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const [url3] = fetchMock.mock.calls[2] as unknown as [string, RequestInit];
@@ -241,8 +242,23 @@ describe("detectType", () => {
   it("throws the last error when every model in the chain fails", async () => {
     fetchMock.mockImplementation(async () => new Response("{}", { status: 429 }));
 
-    await expect(detectType(SYNTHETIC_LEASE)).rejects.toThrow(/status 429/);
+    await expect(detectType(SYNTHETIC_LEASE, { retryDelays: [] })).rejects.toThrow(/status 429/);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a transient 503 on the same model before falling back", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("{}", { status: 503 }))
+      .mockResolvedValueOnce(geminiResponse({ documentType: "lease", confidence: 0.9 }));
+
+    const result = await detectType(SYNTHETIC_LEASE, { retryDelays: [0, 0] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url1] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const [url2] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(url1).toContain("gemini-3.8-flash");
+    expect(url2).toContain("gemini-3.8-flash");
+    expect(result.suggestedType).toBe("lease");
   });
 
   it("does not fall back when the API key itself is rejected", async () => {

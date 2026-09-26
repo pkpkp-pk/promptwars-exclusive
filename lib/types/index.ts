@@ -19,9 +19,11 @@ export interface Document {
   filename: string;
   rawText: string;
   uploadedAt: string;
-  /** Gemini's suggestion from /api/upload — shown to the user, never applied silently. */
-  suggestedType: DocumentType;
-  suggestedTypeConfidence: number; // 0-1
+  /** Gemini's suggestion from /api/upload — shown to the user, never applied silently.
+   *  Absent when type detection failed at upload time (the doc is still stored;
+   *  the user picks the type manually). */
+  suggestedType?: DocumentType;
+  suggestedTypeConfidence?: number; // 0-1
   /** Set once the user confirms or overrides the suggestion. */
   confirmedType?: DocumentType;
 }

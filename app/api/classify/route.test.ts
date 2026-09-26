@@ -195,7 +195,9 @@ it("coerces a category outside the confirmed type's taxonomy to other before per
   expect(getDocument("d1")?.confirmedType).toBe("lease");
 });
 
-it("returns 502 when the Gemini call fails on every model", async () => {
+// Real backoff delays run here (no retryDelays override) — 3 models ×
+// (750ms + 2250ms) exceeds the 5s default timeout.
+it("returns 502 when the Gemini call fails on every model", { timeout: 20000 }, async () => {
   storedDoc("d1", ["1. Rent clause."]);
   fetchMock.mockImplementation(async () => new Response("{}", { status: 500 }));
 

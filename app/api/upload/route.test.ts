@@ -176,20 +176,39 @@ it("returns 503 when the Gemini key is not configured", async () => {
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
-it("returns 502 when type detection fails on every model", async () => {
-  fetchMock.mockImplementation(async () => new Response("{}", { status: 500 }));
+// Real backoff delays run here (3 models × 3s of retries) — needs more than
+// the 5s default timeout.
+it("degrades gracefully when type detection fails on every model", { timeout: 20000 }, async () => {
+  fetchMock.mockImplementation(async () => new Response("{}", { status: 503 }));
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
   const response = await upload(
     fixtureFile("synthetic-lease.pdf", "lease.pdf", "application/pdf"),
   );
-  expect(response.status).toBe(502);
-  const body = (await response.json()) as { error: string };
-  expect(body.error).toMatch(/try again/i);
-  // The upstream reason is surfaced for diagnosis, not swallowed.
-  expect(body.error).toMatch(/status 500/);
+
+  // The deterministic work (extraction, segmentation) succeeded — a transient
+  // Gemini outage must not make ingestion unusable. The document is stored
+  // without a suggestion; the review UI's manual type picker takes over.
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as {
+    docId: string;
+    clauseCount: number;
+    suggestedType?: string;
+    suggestedTypeConfidence?: number;
+  };
+  expect(body.docId).toBeTruthy();
+  expect(body.clauseCount).toBe(9);
+  expect(body.suggestedType).toBeUndefined();
+  expect(body.suggestedTypeConfidence).toBeUndefined();
+
+  const stored = getDocument(body.docId);
+  expect(stored?.filename).toBe("lease.pdf");
+  expect(stored?.suggestedType).toBeUndefined();
+  expect(getClauses(body.docId)).toHaveLength(9);
+
+  // The upstream reason still goes to the logs for diagnosis.
   expect(errorSpy).toHaveBeenCalled();
-  expect(saveDocument).not.toHaveBeenCalled();
+  expect(saveDocument).toHaveBeenCalledTimes(1);
 
   errorSpy.mockRestore();
 });
