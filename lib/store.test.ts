@@ -2,9 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearDocuments,
   getClauses,
+  getComparison,
   getDocument,
+  getEmbeddings,
   saveDocument,
+  setComparison,
   setConfirmedType,
+  setEmbeddings,
   updateClauses,
 } from "./store";
 import type { Clause, Document } from "./types";
@@ -99,5 +103,69 @@ describe("document store", () => {
   it("ignores confirmed-type updates for unknown documents", () => {
     expect(() => setConfirmedType("missing", "lease")).not.toThrow();
     expect(getDocument("missing")).toBeUndefined();
+  });
+
+  it("evicts the oldest upload past the document cap", () => {
+    for (let i = 0; i < 50; i++) {
+      saveDocument(
+        { ...leaseDocument(`old-${i}`, "x"), uploadedAt: `2026-09-${String(1 + (i % 28)).padStart(2, "0")}T00:00:00.000Z` },
+        [],
+      );
+    }
+    saveDocument(
+      { ...leaseDocument("newest", "x"), uploadedAt: "2026-09-26T00:00:00.000Z" },
+      [],
+    );
+
+    expect(getDocument("newest")).toBeDefined();
+    expect(getDocument("old-0")).toBeUndefined(); // 2026-09-01, the oldest
+    expect(getDocument("old-27")).toBeDefined(); // 2026-09-28, survives
+  });
+
+  it("caches embeddings per document and invalidates them on clause updates", () => {
+    saveDocument(leaseDocument("d4", "1. Alpha."), [
+      { id: "d4-c0", docId: "d4", text: "1. Alpha.", order: 0 },
+    ]);
+
+    expect(getEmbeddings("d4")).toBeUndefined();
+    setEmbeddings("d4", [[1, 0]], [1]);
+    expect(getEmbeddings("d4")).toEqual({ vectors: [[1, 0]], norms: [1] });
+
+    updateClauses("d4", [{ id: "d4-c0", docId: "d4", text: "1. Alpha.", order: 0 }]);
+    expect(getEmbeddings("d4")).toBeUndefined();
+  });
+
+  it("caches comparisons and drops them when a side's clauses change", () => {
+    saveDocument(leaseDocument("a", "1. Alpha."), []);
+    saveDocument(leaseDocument("b", "1. Beta."), []);
+    const diffs = [{ category: "rent", docAText: "x", materialDifference: "d", favors: "A" as const }];
+
+    setComparison("a", "b", diffs);
+    expect(getComparison("a", "b")).toEqual(diffs);
+    expect(getComparison("b", "a")).toBeUndefined(); // order-sensitive
+
+    updateClauses("a", []);
+    expect(getComparison("a", "b")).toBeUndefined();
+  });
+
+  it("drops a document's comparisons when it is evicted", () => {
+    saveDocument(
+      { ...leaseDocument("victim", "x"), uploadedAt: "2026-09-01T00:00:00.000Z" },
+      [],
+    );
+    saveDocument(leaseDocument("other", "x"), []);
+    setComparison("victim", "other", [
+      { category: "rent", materialDifference: "d", favors: "neutral" },
+    ]);
+
+    for (let i = 0; i < 50; i++) {
+      saveDocument(
+        { ...leaseDocument(`filler-${i}`, "x"), uploadedAt: `2026-10-${String(1 + (i % 28)).padStart(2, "0")}T00:00:00.000Z` },
+        [],
+      );
+    }
+
+    expect(getDocument("victim")).toBeUndefined();
+    expect(getComparison("victim", "other")).toBeUndefined();
   });
 });

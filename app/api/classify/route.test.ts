@@ -207,7 +207,7 @@ it("returns 502 when the Gemini call fails on every model", { timeout: 20000 }, 
   expect(body.error).toMatch(/try again/i);
 });
 
-it("surfaces the upstream failure detail so the cause is diagnosable", async () => {
+it("keeps upstream failure detail in the logs, out of the user-facing body", async () => {
   storedDoc("d1", ["1. Rent clause."]);
   fetchMock.mockResolvedValueOnce(
     new Response(
@@ -220,10 +220,15 @@ it("surfaces the upstream failure detail so the cause is diagnosable", async () 
   const response = await classify({ docId: "d1", confirmedType: "lease" });
   expect(response.status).toBe(502);
   const body = (await response.json()) as { error: string };
-  expect(body.error).toMatch(/status 403/);
-  expect(body.error).toMatch(/API key not valid/);
-  // The full detail also lands in the server logs (visible in Vercel).
-  expect(errorSpy).toHaveBeenCalled();
+  // Static wording — the upstream message can name internal config and echo
+  // request content, so it never reaches the client.
+  expect(body.error).not.toMatch(/API key not valid/);
+  expect(body.error).toMatch(/try again/i);
+  // The full detail lands in the server logs (visible in Vercel) instead.
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[/api/classify] Gemini call failed:",
+    expect.stringContaining("API key not valid"),
+  );
 
   errorSpy.mockRestore();
 });

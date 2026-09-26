@@ -79,15 +79,24 @@ it("409s when confirmed types differ — no cross-type diff", async () => {
 it("aligns same-category clauses by similarity and returns explained diffs", async () => {
   storedDoc("a", "lease", ["1. Deposit is Rs. 50,000, refundable.", "2. Rent is Rs. 18,000 monthly."]);
   storedDoc("b", "lease", ["1. Deposit is Rs. 90,000, non-refundable.", "2. Rent is Rs. 20,000 monthly."]);
-  // Identical-order embeddings: each A clause matches its B counterpart.
-  fetchMock
-    .mockResolvedValueOnce(embedResponse([[1, 0], [0, 1], [1, 0], [0, 1]]))
-    .mockResolvedValueOnce(
-      diffResponse([
-        { category: "deposit", materialDifference: "B's deposit is higher and non-refundable.", favors: "A" },
-        { category: "deposit", materialDifference: "Rent differs by Rs. 2,000.", favors: "A" },
-      ]),
-    );
+  // Per-document embed calls (cached in the store): deposit clauses get
+  // [1, 0], rent clauses [0, 1] — each A clause matches its B counterpart.
+  fetchMock.mockImplementation(async (url: unknown, init?: { body?: unknown }) => {
+    if (String(url).includes("batchEmbedContents")) {
+      const body = JSON.parse(String(init?.body)) as {
+        requests: { content: { parts: { text: string }[] } }[];
+      };
+      return embedResponse(
+        body.requests.map((r) =>
+          r.content.parts[0]?.text.includes("Deposit") ? [1, 0] : [0, 1],
+        ),
+      );
+    }
+    return diffResponse([
+      { category: "deposit", materialDifference: "B's deposit is higher and non-refundable.", favors: "A" },
+      { category: "deposit", materialDifference: "Rent differs by Rs. 2,000.", favors: "A" },
+    ]);
+  });
 
   const response = await compare({ docAId: "a", docBId: "b" });
   expect(response.status).toBe(200);
@@ -96,8 +105,15 @@ it("aligns same-category clauses by similarity and returns explained diffs", asy
   expect(body.diffs[0]?.materialDifference).toContain("non-refundable");
   expect(body.diffs[0]?.favors).toBe("A");
 
-  // One batched embedding call (4 texts), one comparison call.
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  // First compare: one embed call per document + one comparison call.
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+
+  // Repeat compare of the same pair serves the cached diff — zero API calls.
+  fetchMock.mockClear();
+  const again = await compare({ docAId: "a", docBId: "b" });
+  expect(again.status).toBe(200);
+  expect(((await again.json()) as { diffs: unknown[] }).diffs).toHaveLength(2);
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
 it("returns 502 with quota wording when Gemini is rate-limited", async () => {

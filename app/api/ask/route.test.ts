@@ -77,18 +77,34 @@ it("returns 404 for an unknown document", async () => {
   expect(response.status).toBe(404);
 });
 
+/** Route one embed call per request: clauses land in one batch, the question in its own. */
+function mockEmbeddings(clauseVectors: number[][], questionVector: number[]) {
+  fetchMock.mockImplementation(async (url: unknown, init?: { body?: unknown }) => {
+    const body = JSON.parse(String(init?.body)) as {
+      requests?: { content: { parts: { text: string }[] } }[];
+    };
+    if (String(url).includes("batchEmbedContents")) {
+      const count = body.requests?.length ?? 0;
+      return embedResponse(count === 1 ? [questionVector] : clauseVectors);
+    }
+    return answerResponse({
+      grounded: true,
+      answer: "Either side can end the lease with two months' written notice.",
+      citedClauseIds: ["d1-c1"],
+    });
+  });
+}
+
+function embedCallCount(): number {
+  return fetchMock.mock.calls.filter(([url]) =>
+    String(url).includes("batchEmbedContents"),
+  ).length;
+}
+
 it("answers an in-document question with citations", async () => {
   storedDoc();
   // Question vector close to clause 2 (termination), far from clause 1.
-  fetchMock
-    .mockResolvedValueOnce(embedResponse([[1, 0], [0, 1], [0.9, 0.1]]))
-    .mockResolvedValueOnce(
-      answerResponse({
-        grounded: true,
-        answer: "Either side can end the lease with two months' written notice.",
-        citedClauseIds: ["d1-c1"],
-      }),
-    );
+  mockEmbeddings([[1, 0], [0, 1]], [0.9, 0.1]);
 
   const response = await ask({ docId: "d1", question: "What's the notice period?" });
   expect(response.status).toBe(200);
@@ -101,19 +117,28 @@ it("answers an in-document question with citations", async () => {
   expect(body.answer).toContain("two months");
   expect(body.citedClauseIds).toEqual(["d1-c1"]);
 
-  // One batched embedding call, then one generation call.
+  // First question: clause-corpus embed + question embed + one generation call.
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  const questionCall = fetchMock.mock.calls.find(
+    ([url, init]) =>
+      String(url).includes("batchEmbedContents") &&
+      String((init as { body?: string })?.body).includes("notice period"),
+  );
+  expect(questionCall).toBeDefined();
+
+  // Second question on the same doc: clause embeddings come from the cache —
+  // only the question is embedded (one embed call + one generation call).
+  fetchMock.mockClear();
+  const again = await ask({ docId: "d1", question: "What's the notice period?" });
+  expect(again.status).toBe(200);
   expect(fetchMock).toHaveBeenCalledTimes(2);
-  const embedBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
-    requests: { content: { parts: { text: string }[] } }[];
-  };
-  expect(embedBody.requests).toHaveLength(3); // question + 2 clauses
-  expect(embedBody.requests[0]?.content.parts[0]?.text).toContain("notice period");
+  expect(embedCallCount()).toBe(1);
 });
 
 it("returns grounded: false without a generation call when retrieval misses", async () => {
   storedDoc();
   // Orthogonal vectors — cosine 0, below the threshold.
-  fetchMock.mockResolvedValueOnce(embedResponse([[1, 0], [0, 1], [0, 1]]));
+  mockEmbeddings([[0, 1], [0, 1]], [1, 0]);
 
   const response = await ask({ docId: "d1", question: "Is this legal in Maharashtra?" });
   expect(response.status).toBe(200);
@@ -122,8 +147,9 @@ it("returns grounded: false without a generation call when retrieval misses", as
   expect(body.answer).toMatch(/doesn’t address/i);
   expect(body.answer).toMatch(/legal professional/i);
   expect(body.citedClauseIds).toEqual([]);
-  // Embedding call only — the generation model is never asked to guess.
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  // Embedding calls only — the generation model is never asked to guess.
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(embedCallCount()).toBe(2);
 });
 
 it("returns 502 with quota wording when the embedding call hits 429", async () => {
